@@ -1,0 +1,16 @@
+export function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB';
+
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const unitIndex = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const value = bytes / (1024 ** unitIndex);
+  return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+export function getPdfBaseName(fileName, fallback = 'document') {
+  return (fileName || fallback).replace(/\.pdf$/i, '') || fallback;
+}
+
+export function getFileBaseName(fileName, fallback = 'document') {
+  return (fileName || fallback).replace(/\.[^.]+$/i, '') || fallback;
+}
