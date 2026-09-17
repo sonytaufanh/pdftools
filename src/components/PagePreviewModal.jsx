@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Maximize2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import ModalOverlay from './ModalOverlay';
 
 const DEFAULT_PREVIEW_FACTOR = 1;
 const STAGE_PADDING = 24;
@@ -15,7 +16,7 @@ function roundZoom(value) {
 export default function PagePreviewModal({
   open,
   titleId = 'page-preview-title',
-  pageLabel = 'Page Preview',
+  pageLabel = 'Pratinjau Halaman',
   imageUrl,
   isLoading,
   rotation = 0,
@@ -90,9 +91,14 @@ export default function PagePreviewModal({
     wheelFocusRef.current = {
       type: 'paper',
       ratioX: 0,
-      ratioY: paperFrameSize.height > 0
-        ? clamp((canvasNode.scrollTop + viewportY - paperOrigin.top) / paperFrameSize.height, 0, 1)
-        : 0.5,
+      ratioY:
+        paperFrameSize.height > 0
+          ? clamp(
+              (canvasNode.scrollTop + viewportY - paperOrigin.top) / paperFrameSize.height,
+              0,
+              1
+            )
+          : 0.5,
       viewportX,
       viewportY
     };
@@ -124,18 +130,22 @@ export default function PagePreviewModal({
     const nextPaperBaseHeight = nextDisplayedHeight / nextPaperBaseUnit;
     const availableWidth = Math.max(1, metrics.availableWidth - STAGE_PADDING * 2);
     const availableHeight = Math.max(1, metrics.availableHeight - STAGE_PADDING * 2);
-    const nextFit = Math.max(0.05, roundZoom(Math.min(
-      availableWidth / nextPaperBaseWidth,
-      availableHeight / nextPaperBaseHeight
-    )));
+    const nextFit = Math.max(
+      0.05,
+      roundZoom(
+        Math.min(availableWidth / nextPaperBaseWidth, availableHeight / nextPaperBaseHeight)
+      )
+    );
 
     setFitZoom(current => (Math.abs(current - nextFit) < 0.01 ? current : nextFit));
-    setImageMetrics(current => (
+    setImageMetrics(current =>
       current.width === naturalWidth && current.height === naturalHeight
         ? current
         : { width: naturalWidth, height: naturalHeight }
-    ));
-    setZoomFactor(current => (current === DEFAULT_PREVIEW_FACTOR ? current : DEFAULT_PREVIEW_FACTOR));
+    );
+    setZoomFactor(current =>
+      current === DEFAULT_PREVIEW_FACTOR ? current : DEFAULT_PREVIEW_FACTOR
+    );
   };
 
   useEffect(() => {
@@ -164,11 +174,11 @@ export default function PagePreviewModal({
       const metrics = getCanvasMetrics();
 
       if (metrics) {
-        setViewportSize(current => (
+        setViewportSize(current =>
           current.width === metrics.availableWidth && current.height === metrics.availableHeight
             ? current
             : { width: metrics.availableWidth, height: metrics.availableHeight }
-        ));
+        );
       }
 
       if (!modalSizeChanged) return;
@@ -215,12 +225,14 @@ export default function PagePreviewModal({
 
       wheelFocusRef.current = {
         type: 'paper',
-        ratioX: paperFrameSize.width > 0
-          ? clamp((pointerX - paperOrigin.left) / paperFrameSize.width, 0, 1)
-          : 0.5,
-        ratioY: paperFrameSize.height > 0
-          ? clamp((pointerY - paperOrigin.top) / paperFrameSize.height, 0, 1)
-          : 0.5,
+        ratioX:
+          paperFrameSize.width > 0
+            ? clamp((pointerX - paperOrigin.left) / paperFrameSize.width, 0, 1)
+            : 0.5,
+        ratioY:
+          paperFrameSize.height > 0
+            ? clamp((pointerY - paperOrigin.top) / paperFrameSize.height, 0, 1)
+            : 0.5,
         viewportX,
         viewportY
       };
@@ -237,8 +249,10 @@ export default function PagePreviewModal({
     const handleMouseMove = event => {
       const canvasNode = canvasRef.current;
       if (!canvasNode) return;
-      canvasNode.scrollLeft = dragStateRef.current.originLeft - (event.clientX - dragStateRef.current.startX);
-      canvasNode.scrollTop = dragStateRef.current.originTop - (event.clientY - dragStateRef.current.startY);
+      canvasNode.scrollLeft =
+        dragStateRef.current.originLeft - (event.clientX - dragStateRef.current.startX);
+      canvasNode.scrollTop =
+        dragStateRef.current.originTop - (event.clientY - dragStateRef.current.startY);
     };
     const handleMouseUp = () => setIsDragging(false);
 
@@ -284,7 +298,8 @@ export default function PagePreviewModal({
     if (!open || !imageUrl || isLoading) return;
 
     const imgNode = imgRef.current;
-    const run = () => window.requestAnimationFrame(() => window.requestAnimationFrame(() => fitToView()));
+    const run = () =>
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => fitToView()));
 
     if (!imgNode) {
       run();
@@ -309,27 +324,65 @@ export default function PagePreviewModal({
   const paperPosition = getPaperOrigin();
 
   return (
-    <div className="confirm-overlay page-preview-overlay" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+    <ModalOverlay
+      open={open}
+      onClose={onClose}
+      className="confirm-overlay page-preview-overlay"
+      labelledBy={titleId}
+    >
       <div className="confirm-modal page-preview-modal">
         <div className="page-preview-modal-header">
           <div>
-            <div className="confirm-kicker">Page Preview</div>
-            <h2 id={titleId} className="confirm-title">{pageLabel}</h2>
+            <div className="confirm-kicker">Pratinjau Halaman</div>
+            <h2 id={titleId} className="confirm-title">
+              {pageLabel}
+            </h2>
           </div>
           <div className="page-preview-modal-actions">
-            <div className="page-preview-toolbar" role="group" aria-label="Zoom controls">
-              <button type="button" className="toast-close page-preview-tool" onClick={zoomOut} aria-label="Zoom out" title="Zoom out" disabled={zoomFactor <= DEFAULT_PREVIEW_FACTOR}>
+            <div className="page-preview-toolbar" role="group" aria-label="Kontrol zoom">
+              <button
+                type="button"
+                className="toast-close page-preview-tool"
+                onClick={zoomOut}
+                aria-label="Perkecil"
+                title="Perkecil"
+                disabled={zoomFactor <= DEFAULT_PREVIEW_FACTOR}
+              >
                 <ZoomOut size={16} />
               </button>
-              <div className="page-preview-zoom-label" aria-label={`Zoom ${displayedZoomPercent} percent`}>{displayedZoomPercent}%</div>
-              <button type="button" className="toast-close page-preview-tool" onClick={zoomIn} aria-label="Zoom in" title="Zoom in" disabled={zoomFactor >= DEFAULT_PREVIEW_FACTOR * 3}>
+              <div
+                className="page-preview-zoom-label"
+                aria-label={`Zoom ${displayedZoomPercent} persen`}
+              >
+                {displayedZoomPercent}%
+              </div>
+              <button
+                type="button"
+                className="toast-close page-preview-tool"
+                onClick={zoomIn}
+                aria-label="Perbesar"
+                title="Perbesar"
+                disabled={zoomFactor >= DEFAULT_PREVIEW_FACTOR * 3}
+              >
                 <ZoomIn size={16} />
               </button>
-              <button type="button" className="toast-close page-preview-tool" onClick={fitToView} aria-label="Fit to screen" title="Fit to screen">
+              <button
+                type="button"
+                className="toast-close page-preview-tool"
+                onClick={fitToView}
+                aria-label="Sesuaikan layar"
+                title="Sesuaikan layar"
+              >
                 <Maximize2 size={16} />
               </button>
             </div>
-            <button type="button" className="toast-close page-preview-close" onClick={onClose} aria-label="Close preview" title="Close preview">
+            <button
+              type="button"
+              className="toast-close page-preview-close"
+              onClick={onClose}
+              aria-label="Tutup pratinjau"
+              title="Tutup pratinjau"
+            >
               <X size={16} />
             </button>
           </div>
@@ -340,7 +393,9 @@ export default function PagePreviewModal({
               'page-preview-modal-canvas',
               zoomFactor > DEFAULT_PREVIEW_FACTOR ? 'is-draggable' : '',
               isDragging ? 'is-dragging' : ''
-            ].filter(Boolean).join(' ')}
+            ]
+              .filter(Boolean)
+              .join(' ')}
             ref={canvasRef}
             onMouseDown={event => {
               if (zoomFactor <= DEFAULT_PREVIEW_FACTOR) return;
@@ -357,7 +412,7 @@ export default function PagePreviewModal({
             {isLoading ? (
               <div className="page-preview-modal-placeholder">
                 <div className="preview-skeleton loading" />
-                <span>Rendering page preview...</span>
+                <span>Merender pratinjau halaman...</span>
               </div>
             ) : imageUrl ? (
               <div
@@ -402,23 +457,35 @@ export default function PagePreviewModal({
               </div>
             ) : (
               <div className="page-preview-modal-placeholder">
-                <span>Preview is not available for this page.</span>
+                <span>Pratinjau tidak tersedia untuk halaman ini.</span>
               </div>
             )}
           </div>
         </div>
         <div className="page-preview-modal-footer">
-          <button type="button" className="confirm-button secondary" onClick={onPrev} disabled={!canGoPrev}>
+          <button
+            type="button"
+            className="confirm-button secondary"
+            onClick={onPrev}
+            disabled={!canGoPrev}
+          >
             <ChevronLeft size={16} />
-            Previous
+            Sebelumnya
           </button>
-          <button type="button" className="confirm-button secondary" onClick={onClose}>Close</button>
-          <button type="button" className="confirm-button primary" onClick={onNext} disabled={!canGoNext}>
-            Next
+          <button type="button" className="confirm-button secondary" onClick={onClose}>
+            Tutup
+          </button>
+          <button
+            type="button"
+            className="confirm-button primary"
+            onClick={onNext}
+            disabled={!canGoNext}
+          >
+            Berikutnya
             <ChevronRight size={16} />
           </button>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }

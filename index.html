@@ -1,24 +1,67 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
     <meta
       name="description"
-      content="PDFTools is a browser-based toolkit for merging, compressing, rotating, watermarking, and converting PDF and image files."
+      content="PDFTools is a browser-based toolkit for merging, compressing, rotating, watermarking, and converting PDF and image files. Files are processed locally in your browser."
     />
     <meta name="robots" content="index,follow" />
     <meta name="theme-color" content="#0f172a" />
-    <meta property="og:title" content="PDFTools" />
+    <meta name="application-name" content="PDFTools" />
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="PDFTools" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <meta property="og:site_name" content="PDFTools" />
+    <meta property="og:title" content="PDFTools - Browser PDF & Image Tools" />
     <meta
       property="og:description"
-      content="Fast privacy-friendly PDF and image tools that run in the browser."
+      content="Fast, privacy-friendly PDF and image tools that run entirely in your browser."
     />
     <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="PDFTools - Browser PDF & Image Tools" />
+    <meta
+      name="twitter:description"
+      content="Merge, compress, rotate, watermark, and convert PDF and image files locally in your browser."
+    />
     <title>PDFTools - Browser PDF & Image Tools</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "PDFTools",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "Any",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "description": "Browser-based toolkit for merging, compressing, rotating, watermarking, and converting PDF and image files."
+      }
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <div
+        style="
+          max-width: 640px;
+          margin: 80px auto;
+          padding: 24px;
+          font-family: system-ui, sans-serif;
+          text-align: center;
+        "
+      >
+        <h1>JavaScript is required</h1>
+        <p>PDFTools processes files locally in your browser and needs JavaScript enabled to run.</p>
+      </div>
+    </noscript>
   </body>
 </html>

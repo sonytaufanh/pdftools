@@ -5,7 +5,7 @@ import ProcessingOverlay from '../components/ProcessingOverlay';
 import StatusBanner from '../components/StatusBanner';
 import { canvasToArrayBuffer, clearCanvas } from '../lib/canvas';
 import { formatBytes, getPdfBaseName } from '../lib/formatters';
-import { getPdfJsLib } from '../lib/pdfjs';
+import { destroyPdfProxy, getPdfJsLib } from '../lib/pdfjs';
 import { readPdfPreview } from '../lib/pdfPreview';
 import { requestPdfSaveTarget } from '../lib/saveFile';
 import { getDroppedFiles, hasDraggedFiles } from '../lib/dropFiles';
@@ -13,22 +13,22 @@ import { getDroppedFiles, hasDraggedFiles } from '../lib/dropFiles';
 const COMPRESSION_PRESETS = [
   {
     id: 'best',
-    label: 'Best Quality',
-    description: 'Keeps pages clearer with the highest output quality.',
+    label: 'Kualitas Terbaik',
+    description: 'Halaman lebih jelas dengan kualitas output tertinggi.',
     scale: 1.75,
     quality: 0.84
   },
   {
     id: 'balanced',
-    label: 'Balanced',
-    description: 'Good quality with a smaller file size.',
+    label: 'Seimbang',
+    description: 'Kualitas bagus dengan ukuran file lebih kecil.',
     scale: 1.35,
     quality: 0.72
   },
   {
     id: 'small',
-    label: 'Small',
-    description: 'Smallest size for sharing by email.',
+    label: 'Kecil',
+    description: 'Ukuran paling kecil untuk dikirim via email.',
     scale: 1,
     quality: 0.56
   }
@@ -43,22 +43,25 @@ const FALLBACK_ESTIMATE_RATIOS = {
 const MIN_SAVINGS_BYTES = 1024;
 
 function getEstimatePageNumbers(pageCount) {
-  return Array.from(new Set([1, Math.ceil(pageCount / 2), pageCount]))
-    .filter(pageNumber => pageNumber >= 1 && pageNumber <= pageCount);
+  return Array.from(new Set([1, Math.ceil(pageCount / 2), pageCount])).filter(
+    pageNumber => pageNumber >= 1 && pageNumber <= pageCount
+  );
 }
 
 function getFallbackCompressionEstimates(fileSize) {
-  return Object.fromEntries(COMPRESSION_PRESETS.map(preset => [
-    preset.id,
-    Math.max(1, Math.round(fileSize * (FALLBACK_ESTIMATE_RATIOS[preset.id] ?? 1)))
-  ]));
+  return Object.fromEntries(
+    COMPRESSION_PRESETS.map(preset => [
+      preset.id,
+      Math.max(1, Math.round(fileSize * (FALLBACK_ESTIMATE_RATIOS[preset.id] ?? 1)))
+    ])
+  );
 }
 
 function estimatePdfBytes(sampleBytes, sampleCount, pageCount) {
   if (!sampleCount || !pageCount) return 0;
   const averagePageBytes = sampleBytes / sampleCount;
-  const pdfOverheadBytes = 4096 + (pageCount * 1400);
-  return Math.max(1, Math.round((averagePageBytes * pageCount) + pdfOverheadBytes));
+  const pdfOverheadBytes = 4096 + pageCount * 1400;
+  return Math.max(1, Math.round(averagePageBytes * pageCount + pdfOverheadBytes));
 }
 
 function isMeaningfullySmaller(outputSize, originalSize) {
@@ -67,16 +70,32 @@ function isMeaningfullySmaller(outputSize, originalSize) {
 
 function getAvailablePresetIds(sizeValues, originalSize) {
   if (!originalSize) return [];
-  return COMPRESSION_PRESETS
-    .filter(preset => isMeaningfullySmaller(sizeValues[preset.id], originalSize))
-    .map(preset => preset.id);
+  return COMPRESSION_PRESETS.filter(preset =>
+    isMeaningfullySmaller(sizeValues[preset.id], originalSize)
+  ).map(preset => preset.id);
 }
 
 function chooseAvailablePresetId(sizeValues, originalSize, preferredId) {
   const availablePresetIds = getAvailablePresetIds(sizeValues, originalSize);
   return availablePresetIds.includes(preferredId)
     ? preferredId
-    : availablePresetIds[0] ?? preferredId ?? COMPRESSION_PRESETS[0].id;
+    : (availablePresetIds[0] ?? preferredId ?? COMPRESSION_PRESETS[0].id);
+}
+
+function findPresetIdForTarget(sizeValues, targetBytes) {
+  const sizes = COMPRESSION_PRESETS.map(preset => ({
+    id: preset.id,
+    size: sizeValues[preset.id]
+  })).filter(entry => Number.isFinite(entry.size) && entry.size > 0);
+
+  const withinTarget = sizes.filter(entry => entry.size <= targetBytes);
+  if (withinTarget.length) {
+    // Pick the largest output that still fits: best quality under the target.
+    return withinTarget.reduce((best, entry) => (entry.size > best.size ? entry : best)).id;
+  }
+
+  if (!sizes.length) return null;
+  return sizes.reduce((best, entry) => (entry.size < best.size ? entry : best)).id;
 }
 
 async function estimateCompressionSizes(file, pageCount, onProgress) {
@@ -106,7 +125,7 @@ async function estimateCompressionSizes(file, pageCount, onProgress) {
             const context = canvas.getContext('2d');
 
             if (!context) {
-              throw new Error('Canvas is not supported in this browser.');
+              throw new Error('Canvas tidak didukung di browser ini.');
             }
 
             canvas.width = Math.max(1, Math.round(viewport.width));
@@ -135,14 +154,16 @@ async function estimateCompressionSizes(file, pageCount, onProgress) {
       }
     }
 
-    return Object.fromEntries(COMPRESSION_PRESETS.map(preset => [
-      preset.id,
-      sampleCounts[preset.id] > 0
-        ? estimatePdfBytes(sampleTotals[preset.id], sampleCounts[preset.id], pageCount)
-        : fallbackEstimates[preset.id]
-    ]));
+    return Object.fromEntries(
+      COMPRESSION_PRESETS.map(preset => [
+        preset.id,
+        sampleCounts[preset.id] > 0
+          ? estimatePdfBytes(sampleTotals[preset.id], sampleCounts[preset.id], pageCount)
+          : fallbackEstimates[preset.id]
+      ])
+    );
   } finally {
-    await pdfProxy.destroy();
+    await destroyPdfProxy(pdfProxy);
   }
 }
 
@@ -154,12 +175,14 @@ export default function CompressPdfPage() {
   const [result, setResult] = useState(null);
   const [presetEstimates, setPresetEstimates] = useState({ status: 'idle', values: {} });
   const [presetActualSizes, setPresetActualSizes] = useState({});
+  const [targetSizeMb, setTargetSizeMb] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [isFileDropActive, setIsFileDropActive] = useState(false);
 
   const selectedPreset = useMemo(
-    () => COMPRESSION_PRESETS.find(preset => preset.id === selectedPresetId) ?? COMPRESSION_PRESETS[0],
+    () =>
+      COMPRESSION_PRESETS.find(preset => preset.id === selectedPresetId) ?? COMPRESSION_PRESETS[0],
     [selectedPresetId]
   );
   const presetSizeValues = useMemo(
@@ -170,18 +193,34 @@ export default function CompressPdfPage() {
     () => (pdfFile ? getAvailablePresetIds(presetSizeValues, pdfFile.size) : []),
     [pdfFile, presetSizeValues]
   );
-  const visiblePresets = useMemo(
-    () => {
-      if (!pdfFile || presetEstimates.status !== 'ready') return COMPRESSION_PRESETS;
-      return COMPRESSION_PRESETS.filter(preset => availablePresetIds.includes(preset.id));
-    },
-    [availablePresetIds, pdfFile, presetEstimates.status]
-  );
+  const visiblePresets = useMemo(() => {
+    if (!pdfFile || presetEstimates.status !== 'ready') return COMPRESSION_PRESETS;
+    return COMPRESSION_PRESETS.filter(preset => availablePresetIds.includes(preset.id));
+  }, [availablePresetIds, pdfFile, presetEstimates.status]);
   const canCompressSelectedPreset = Boolean(
-    pdfFile &&
-    presetEstimates.status === 'ready' &&
-    availablePresetIds.includes(selectedPreset.id)
+    pdfFile && presetEstimates.status === 'ready' && availablePresetIds.includes(selectedPreset.id)
   );
+
+  function applyTargetSize(value) {
+    setTargetSizeMb(value);
+
+    const numericValue = Number(value);
+    if (!value.trim() || !Number.isFinite(numericValue) || numericValue <= 0) return;
+    if (presetEstimates.status !== 'ready') return;
+
+    const targetBytes = numericValue * 1024 * 1024;
+    const nextPresetId = findPresetIdForTarget(presetSizeValues, targetBytes);
+    if (!nextPresetId) return;
+
+    setSelectedPresetId(nextPresetId);
+    const estimatedSize = presetSizeValues[nextPresetId];
+    const reachable = Number.isFinite(estimatedSize) && estimatedSize <= targetBytes;
+    setStatus({
+      tone: reachable ? 'info' : 'error',
+      title: reachable ? 'Preset sesuai target' : 'Target mungkin tidak tercapai',
+      detail: `Perkiraan preset terdekat ${formatBytes(estimatedSize || 0)}.`
+    });
+  }
 
   async function handleFileUpload(event) {
     const [file] = Array.from(event.target.files ?? []);
@@ -189,17 +228,26 @@ export default function CompressPdfPage() {
     if (!file) return;
 
     if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      setStatus({ tone: 'error', title: 'Only PDF files are supported', detail: 'Choose a PDF file before compressing.' });
+      setStatus({
+        tone: 'error',
+        title: 'Hanya file PDF yang didukung',
+        detail: 'Pilih file PDF sebelum mengompres.'
+      });
       return;
     }
 
     setIsProcessing(true);
     setProgress({ current: 0, total: 1 });
-    setStatus({ tone: 'loading', title: 'Loading PDF', detail: 'Preparing preview and page count.' });
+    setStatus({
+      tone: 'loading',
+      title: 'Memuat PDF',
+      detail: 'Menyiapkan pratinjau dan jumlah halaman.'
+    });
     setResult(null);
     setPresetEstimates({ status: 'loading', values: {} });
     setPresetActualSizes({});
     setSelectedPresetId(COMPRESSION_PRESETS[0].id);
+    setTargetSizeMb('');
 
     try {
       const preview = await readPdfPreview(file, { scale: 0.46, quality: 0.82 });
@@ -211,39 +259,51 @@ export default function CompressPdfPage() {
         previewUrl: preview.previewUrl
       };
       setPdfFile(nextPdfFile);
-        setStatus({ tone: 'loading', title: 'Estimating output size', detail: 'Sampling pages for Best Quality, Balanced, and Small presets.' });
+      setStatus({
+        tone: 'loading',
+        title: 'Memperkirakan ukuran hasil',
+        detail: 'Mengambil sampel halaman untuk preset Kualitas Terbaik, Seimbang, dan Kecil.'
+      });
 
       try {
         const estimates = await estimateCompressionSizes(file, preview.pageCount, setProgress);
         const availableIds = getAvailablePresetIds(estimates, file.size);
         setPresetEstimates({ status: 'ready', values: estimates });
-        setSelectedPresetId(chooseAvailablePresetId(estimates, file.size, COMPRESSION_PRESETS[0].id));
+        setSelectedPresetId(
+          chooseAvailablePresetId(estimates, file.size, COMPRESSION_PRESETS[0].id)
+        );
         setStatus({
           tone: availableIds.length ? 'success' : 'info',
-          title: availableIds.length ? 'PDF ready' : 'PDF already optimized',
+          title: availableIds.length ? 'PDF siap' : 'PDF sudah optimal',
           detail: availableIds.length
-            ? `${preview.pageCount} page${preview.pageCount === 1 ? '' : 's'} loaded. Showing only presets estimated below the original size.`
-            : `${preview.pageCount} page${preview.pageCount === 1 ? '' : 's'} loaded, but no preset is estimated below the original size.`
+            ? `${preview.pageCount} halaman dimuat. Hanya preset yang diperkirakan di bawah ukuran asli yang ditampilkan.`
+            : `${preview.pageCount} halaman dimuat, tapi tidak ada preset yang diperkirakan di bawah ukuran asli.`
         });
       } catch (estimateError) {
         console.error(estimateError);
         const fallbackEstimates = getFallbackCompressionEstimates(file.size);
         const availableIds = getAvailablePresetIds(fallbackEstimates, file.size);
         setPresetEstimates({ status: 'ready', values: fallbackEstimates });
-        setSelectedPresetId(chooseAvailablePresetId(fallbackEstimates, file.size, COMPRESSION_PRESETS[0].id));
+        setSelectedPresetId(
+          chooseAvailablePresetId(fallbackEstimates, file.size, COMPRESSION_PRESETS[0].id)
+        );
         setStatus({
           tone: availableIds.length ? 'success' : 'info',
-          title: availableIds.length ? 'PDF ready' : 'PDF already optimized',
+          title: availableIds.length ? 'PDF siap' : 'PDF sudah optimal',
           detail: availableIds.length
-            ? `${preview.pageCount} page${preview.pageCount === 1 ? '' : 's'} loaded with fallback size estimates. Showing only presets below the original size.`
-            : `${preview.pageCount} page${preview.pageCount === 1 ? '' : 's'} loaded, but no preset is estimated below the original size.`
+            ? `${preview.pageCount} halaman dimuat dengan perkiraan cadangan. Hanya preset di bawah ukuran asli yang ditampilkan.`
+            : `${preview.pageCount} halaman dimuat, tapi tidak ada preset yang diperkirakan di bawah ukuran asli.`
         });
       }
     } catch (error) {
       console.error(error);
       setPdfFile(null);
       setPresetEstimates({ status: 'idle', values: {} });
-      setStatus({ tone: 'error', title: 'Unable to read PDF', detail: error.message || 'The selected file could not be opened.' });
+      setStatus({
+        tone: 'error',
+        title: 'Gagal membaca PDF',
+        detail: error.message || 'File yang dipilih tidak bisa dibuka.'
+      });
     } finally {
       setIsProcessing(false);
       setProgress({ current: 0, total: 0 });
@@ -254,6 +314,7 @@ export default function CompressPdfPage() {
     setPdfFile(null);
     setResult(null);
     setStatus(null);
+    setTargetSizeMb('');
     setPresetEstimates({ status: 'idle', values: {} });
     setPresetActualSizes({});
   }
@@ -284,18 +345,25 @@ export default function CompressPdfPage() {
     if (!canCompressSelectedPreset) {
       setStatus({
         tone: 'info',
-        title: 'No smaller output available',
-        detail: 'Choose a preset estimated below the original file size before compressing.'
+        title: 'Tidak ada hasil lebih kecil',
+        detail: 'Pilih preset yang diperkirakan di bawah ukuran file asli sebelum mengompres.'
       });
       return;
     }
 
-    const saveTarget = await requestPdfSaveTarget(`${getPdfBaseName(pdfFile.name)}_compressed`, 'compressed-document');
+    const saveTarget = await requestPdfSaveTarget(
+      `${getPdfBaseName(pdfFile.name)}_compressed`,
+      'dokumen-terkompresi'
+    );
     if (!saveTarget) return;
 
     setIsProcessing(true);
     setResult(null);
-    setStatus({ tone: 'loading', title: 'Compressing PDF', detail: `Using ${selectedPreset.label} settings.` });
+    setStatus({
+      tone: 'loading',
+      title: 'Mengompres PDF',
+      detail: `Menggunakan preset ${selectedPreset.label}.`
+    });
     setProgress({ current: 0, total: pdfFile.pageCount });
 
     let pdfProxy = null;
@@ -329,7 +397,11 @@ export default function CompressPdfPage() {
           context.fillRect(0, 0, canvas.width, canvas.height);
           await page.render({ canvasContext: context, viewport: renderViewport }).promise;
 
-          const imageBytes = await canvasToArrayBuffer(canvas, 'image/jpeg', selectedPreset.quality);
+          const imageBytes = await canvasToArrayBuffer(
+            canvas,
+            'image/jpeg',
+            selectedPreset.quality
+          );
           const image = await outputPdf.embedJpg(imageBytes);
           const outputPage = outputPdf.addPage([sourceViewport.width, sourceViewport.height]);
           outputPage.drawImage(image, {
@@ -354,7 +426,8 @@ export default function CompressPdfPage() {
 
       const outputBlob = new Blob([outputBytes], { type: 'application/pdf' });
       const savedBytes = pdfFile.size - outputBlob.size;
-      const savedPercent = pdfFile.size > 0 ? Math.max(0, Math.round((savedBytes / pdfFile.size) * 100)) : 0;
+      const savedPercent =
+        pdfFile.size > 0 ? Math.max(0, Math.round((savedBytes / pdfFile.size) * 100)) : 0;
       const updatedSizeValues = {
         [selectedPreset.id]: outputBlob.size
       };
@@ -376,7 +449,11 @@ export default function CompressPdfPage() {
       }));
 
       if (!isMeaningfullySmaller(outputBlob.size, pdfFile.size)) {
-        const nextPresetId = chooseAvailablePresetId(nextSizeValues, pdfFile.size, selectedPreset.id);
+        const nextPresetId = chooseAvailablePresetId(
+          nextSizeValues,
+          pdfFile.size,
+          selectedPreset.id
+        );
         const nextAvailablePresetIds = getAvailablePresetIds(nextSizeValues, pdfFile.size);
         if (nextAvailablePresetIds.includes(nextPresetId)) {
           setSelectedPresetId(nextPresetId);
@@ -391,8 +468,8 @@ export default function CompressPdfPage() {
         });
         setStatus({
           tone: 'info',
-          title: 'Output is not smaller',
-          detail: `Nothing was saved. ${selectedPreset.label} would create ${formatBytes(outputBlob.size)}, while the original is ${formatBytes(pdfFile.size)}. This preset is now hidden.`
+          title: 'Hasil tidak lebih kecil',
+          detail: `Tidak ada file yang disimpan. ${selectedPreset.label} menghasilkan ${formatBytes(outputBlob.size)}, sedangkan aslinya ${formatBytes(pdfFile.size)}. Preset ini sekarang disembunyikan.`
         });
         return;
       }
@@ -408,15 +485,19 @@ export default function CompressPdfPage() {
       });
       setStatus({
         tone: 'success',
-        title: 'Compression complete',
-        detail: `${saveTarget.name} saved. Saved ${formatBytes(savedBytes)} (${savedPercent}%).`
+        title: 'Kompresi selesai',
+        detail: `${saveTarget.name} tersimpan. Hemat ${formatBytes(savedBytes)} (${savedPercent}%).`
       });
     } catch (error) {
       console.error(error);
-      setStatus({ tone: 'error', title: 'Compression failed', detail: error.message || 'Unable to compress this PDF.' });
+      setStatus({
+        tone: 'error',
+        title: 'Kompresi gagal',
+        detail: error.message || 'Gagal mengompres PDF ini.'
+      });
     } finally {
       if (pdfProxy) {
-        await pdfProxy.destroy();
+        await destroyPdfProxy(pdfProxy);
       }
       setIsProcessing(false);
       setProgress({ current: 0, total: 0 });
@@ -433,35 +514,49 @@ export default function CompressPdfPage() {
       <section className="panel compress-panel">
         <div className="toolbar compress-toolbar">
           <div>
-            <h2 className="brand-title compress-title">Compress PDF</h2>
-            <p className="brand-subtitle">Reduce PDF size directly in the browser</p>
+            <h2 className="brand-title compress-title">Kompres PDF</h2>
+            <p className="brand-subtitle">Kecilkan ukuran PDF langsung di browser</p>
           </div>
           <div className="merge-actions">
             <button className="secondary-button" onClick={() => fileInputRef.current?.click()}>
               <Upload size={16} />
-              Choose PDF
+              Pilih PDF
             </button>
             {pdfFile && (
               <button className="ghost-button" onClick={clearFile} disabled={isProcessing}>
                 <X size={16} />
-                Clear PDF
+                Hapus PDF
               </button>
             )}
-            <button className="primary-button" onClick={compressPdf} disabled={!canCompressSelectedPreset || isProcessing}>
+            <button
+              className="primary-button"
+              onClick={compressPdf}
+              disabled={!canCompressSelectedPreset || isProcessing}
+            >
               <Download size={16} />
-              Compress & Download
+              Kompres &amp; Unduh
             </button>
           </div>
         </div>
 
-        <input ref={fileInputRef} type="file" hidden accept="application/pdf,.pdf" onChange={handleFileUpload} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          hidden
+          accept="application/pdf,.pdf"
+          onChange={handleFileUpload}
+        />
         <StatusBanner status={status} />
 
         {!pdfFile ? (
-          <button type="button" className="dropzone compress-upload-zone" onClick={() => fileInputRef.current?.click()}>
+          <button
+            type="button"
+            className="dropzone compress-upload-zone"
+            onClick={() => fileInputRef.current?.click()}
+          >
             <Archive size={56} />
-            <span className="field-value">Choose a PDF to compress</span>
-            <span className="muted">Drop a PDF here or choose one from your device.</span>
+            <span className="field-value">Pilih PDF untuk dikompres</span>
+            <span className="muted">Seret PDF ke sini atau pilih dari perangkat Anda.</span>
           </button>
         ) : (
           <div className="compress-grid">
@@ -475,21 +570,27 @@ export default function CompressPdfPage() {
               </div>
               <div className="compress-file-info">
                 <div>
-                  <div className="field-label">Selected File</div>
+                  <div className="field-label">File Terpilih</div>
                   <div className="compress-file-name">{pdfFile.name}</div>
                 </div>
                 <div className="compress-meta-grid">
                   <div>
-                    <span className="field-label">Size</span>
+                    <span className="field-label">Ukuran</span>
                     <span className="field-value">{formatBytes(pdfFile.size)}</span>
                   </div>
                   <div>
-                    <span className="field-label">Pages</span>
+                    <span className="field-label">Halaman</span>
                     <span className="field-value">{pdfFile.pageCount}</span>
                   </div>
                 </div>
               </div>
-              <button type="button" className="toast-close compress-clear-button" onClick={clearFile} aria-label="Remove selected PDF" title="Remove selected PDF">
+              <button
+                type="button"
+                className="toast-close compress-clear-button"
+                onClick={clearFile}
+                aria-label="Hapus PDF terpilih"
+                title="Hapus PDF terpilih"
+              >
                 <X size={16} />
               </button>
             </article>
@@ -497,25 +598,46 @@ export default function CompressPdfPage() {
             <section className="compress-settings">
               <div className="compress-settings-header">
                 <div>
-                  <div className="field-label">Level Compression</div>
-                  <div className="field-value">Choose output quality</div>
+                  <div className="field-label">Level Kompresi</div>
+                  <div className="field-value">Pilih kualitas output</div>
                 </div>
                 <SlidersHorizontal size={20} />
               </div>
 
-              <div className="compress-preset-grid" role="radiogroup" aria-label="Level compression">
+              <div className="compress-target-field">
+                <label className="field-label" htmlFor="compress-target-size">
+                  Target ukuran (MB, opsional)
+                </label>
+                <input
+                  id="compress-target-size"
+                  className="converter-input"
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  placeholder="mis. 2"
+                  value={targetSizeMb}
+                  onChange={event => applyTargetSize(event.target.value)}
+                />
+                <span className="converter-field-hint">
+                  Memilih preset terbaik yang diperkirakan di bawah ukuran ini.
+                </span>
+              </div>
+
+              <div className="compress-preset-grid" role="radiogroup" aria-label="Level kompresi">
                 {visiblePresets.map(preset => {
                   const actualSize = presetActualSizes[preset.id];
                   const estimatedSize = presetEstimates.values[preset.id];
-                  const fallbackSize = pdfFile ? getFallbackCompressionEstimates(pdfFile.size)[preset.id] : null;
+                  const fallbackSize = pdfFile
+                    ? getFallbackCompressionEstimates(pdfFile.size)[preset.id]
+                    : null;
                   const displayEstimate = estimatedSize ?? fallbackSize;
                   const sizeLabel = actualSize
-                    ? `${formatBytes(actualSize)} actual`
+                    ? `${formatBytes(actualSize)} aktual`
                     : presetEstimates.status === 'loading'
-                      ? 'Estimating...'
+                      ? 'Memperkirakan...'
                       : displayEstimate
-                        ? `~${formatBytes(displayEstimate)} est.`
-                        : 'Estimate pending';
+                        ? `~${formatBytes(displayEstimate)} perk.`
+                        : 'Menunggu perkiraan';
 
                   return (
                     <button
@@ -526,7 +648,9 @@ export default function CompressPdfPage() {
                       className={[
                         'compress-preset-button',
                         selectedPresetId === preset.id ? 'active' : ''
-                      ].filter(Boolean).join(' ')}
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
                       onClick={() => setSelectedPresetId(preset.id)}
                     >
                       <span className="compress-preset-title">
@@ -541,23 +665,27 @@ export default function CompressPdfPage() {
 
               {pdfFile && presetEstimates.status === 'ready' && visiblePresets.length === 0 && (
                 <div className="compress-empty-note">
-                  No compression preset is estimated below the original file size.
+                  Tidak ada preset kompresi yang diperkirakan di bawah ukuran file asli.
                 </div>
               )}
 
               {result && (
-                <div className={result.savedBytes > 0 ? 'compress-result' : 'compress-result warning'}>
+                <div
+                  className={result.savedBytes > 0 ? 'compress-result' : 'compress-result warning'}
+                >
                   <div>
-                    <span className="field-label">Original</span>
+                    <span className="field-label">Asli</span>
                     <span className="field-value">{formatBytes(result.originalSize)}</span>
                   </div>
                   <div>
-                    <span className="field-label">{result.wasSaved ? 'Compressed' : 'Output'}</span>
+                    <span className="field-label">{result.wasSaved ? 'Terkompresi' : 'Hasil'}</span>
                     <span className="field-value">{formatBytes(result.compressedSize)}</span>
                   </div>
                   <div>
-                    <span className="field-label">Saved</span>
-                    <span className="field-value">{result.savedBytes > 0 ? `${result.savedPercent}%` : '0%'}</span>
+                    <span className="field-label">Hemat</span>
+                    <span className="field-value">
+                      {result.savedBytes > 0 ? `${result.savedPercent}%` : '0%'}
+                    </span>
                   </div>
                 </div>
               )}
@@ -566,7 +694,7 @@ export default function CompressPdfPage() {
         )}
       </section>
 
-      {isProcessing && <ProcessingOverlay progress={progress} label="Compressing..." />}
+      {isProcessing && <ProcessingOverlay progress={progress} label="Mengompres..." />}
     </div>
   );
 }

@@ -21,7 +21,7 @@ export default function PaginationControls({
   pageSize,
   currentPage,
   onPageChange,
-  itemLabel = 'Items',
+  itemLabel = 'Item',
   pageSizeOptions = [20, 30, 50],
   onPageSizeChange
 }) {
@@ -30,7 +30,7 @@ export default function PaginationControls({
   if (totalPages <= 1 && !hasPageSizeOptions) return null;
 
   const safePage = Math.min(Math.max(1, currentPage), totalPages);
-  const startItem = ((safePage - 1) * pageSize) + 1;
+  const startItem = (safePage - 1) * pageSize + 1;
   const endItem = Math.min(startItem + pageSize - 1, totalItems);
   const pageItems = getPageItems(safePage, totalPages);
 
@@ -48,7 +48,9 @@ export default function PaginationControls({
               onChange={event => onPageSizeChange(Number(event.target.value))}
             >
               {pageSizeOptions.map(option => (
-                <option key={option} value={option}>{option}</option>
+                <option key={option} value={option}>
+                  {option}
+                </option>
               ))}
             </select>
           </label>
@@ -61,9 +63,9 @@ export default function PaginationControls({
               onClick={() => onPageChange(safePage - 1)}
               disabled={safePage === 1}
             >
-              Previous
+              Sebelumnya
             </button>
-            {pageItems.map(item => (
+            {pageItems.map(item =>
               typeof item === 'number' ? (
                 <button
                   key={item}
@@ -74,16 +76,18 @@ export default function PaginationControls({
                   {item}
                 </button>
               ) : (
-                <span key={item} className="pagination-ellipsis">...</span>
+                <span key={item} className="pagination-ellipsis">
+                  ...
+                </span>
               )
-            ))}
+            )}
             <button
               type="button"
               className="ghost-button"
               onClick={() => onPageChange(safePage + 1)}
               disabled={safePage === totalPages}
             >
-              Next
+              Berikutnya
             </button>
           </>
         )}

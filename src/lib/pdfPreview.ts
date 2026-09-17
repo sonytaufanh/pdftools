@@ -1,13 +1,27 @@
+import type { PDFPageProxy } from 'pdfjs-dist';
 import { clearCanvas } from './canvas';
-import { getPdfJsLib } from './pdfjs';
+import { destroyPdfProxy, getPdfJsLib } from './pdfjs';
 
-export async function renderPdfBytesPreview(arrayBuffer, { scale = 0.5, quality = 0.82 } = {}) {
+interface PreviewOptions {
+  scale?: number;
+  quality?: number;
+}
+
+export interface PdfPreviewResult {
+  pageCount: number;
+  previewUrl: string;
+}
+
+export async function renderPdfBytesPreview(
+  arrayBuffer: ArrayBuffer,
+  { scale = 0.5, quality = 0.82 }: PreviewOptions = {}
+): Promise<PdfPreviewResult> {
   const pdfjsLib = getPdfJsLib();
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) });
   const pdfProxy = await loadingTask.promise;
 
-  let page = null;
-  let canvas = null;
+  let page: PDFPageProxy | null = null;
+  let canvas: HTMLCanvasElement | null = null;
 
   try {
     page = await pdfProxy.getPage(1);
@@ -23,7 +37,7 @@ export async function renderPdfBytesPreview(arrayBuffer, { scale = 0.5, quality 
     canvas.height = Math.max(1, Math.round(viewport.height));
     context.fillStyle = '#ffffff';
     context.fillRect(0, 0, canvas.width, canvas.height);
-    await page.render({ canvasContext: context, viewport }).promise;
+    await page.render({ canvas, canvasContext: context, viewport }).promise;
 
     return {
       pageCount: pdfProxy.numPages || 1,
@@ -32,11 +46,14 @@ export async function renderPdfBytesPreview(arrayBuffer, { scale = 0.5, quality 
   } finally {
     page?.cleanup();
     clearCanvas(canvas);
-    await pdfProxy.destroy();
+    await destroyPdfProxy(pdfProxy);
   }
 }
 
-export async function readPdfPreview(file, options) {
+export async function readPdfPreview(
+  file: Blob,
+  options?: PreviewOptions
+): Promise<PdfPreviewResult> {
   const arrayBuffer = await file.arrayBuffer();
   return renderPdfBytesPreview(arrayBuffer, options);
 }

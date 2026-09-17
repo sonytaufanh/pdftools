@@ -5,3 +5,12 @@ dist/
 *.log
 cloudflared.exe
 cloudflared-*.exe
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Coverage
+coverage/

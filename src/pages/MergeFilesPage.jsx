@@ -1,23 +1,48 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PDFDocument, StandardFonts, degrees } from 'pdf-lib';
-import { Check, CheckSquare, Eye, FileCheck, Files, FileStack, Palette, PlusCircle, RotateCw, Trash2, Ungroup } from 'lucide-react';
+import {
+  Check,
+  CheckSquare,
+  Eye,
+  FileCheck,
+  Files,
+  FileStack,
+  Hash,
+  Palette,
+  PlusCircle,
+  RotateCw,
+  Trash2,
+  Ungroup
+} from 'lucide-react';
+import CardMoveControls from '../components/CardMoveControls';
+import ModalOverlay from '../components/ModalOverlay';
 import PaginationControls from '../components/PaginationControls';
 import PagePreviewModal from '../components/PagePreviewModal';
 import ProcessingOverlay from '../components/ProcessingOverlay';
 import StatusBanner from '../components/StatusBanner';
-import { applyCanvasGrayscale, canvasToArrayBuffer, clearCanvas } from '../lib/canvas';
+import {
+  applyCanvasGrayscale,
+  canvasToArrayBuffer,
+  clearCanvas,
+  rotateCanvas
+} from '../lib/canvas';
 import { preprocessImageForPdf } from '../lib/imageProcessing';
-import { getPdfJsLib } from '../lib/pdfjs';
+import { destroyPdfProxy, getPdfJsLib } from '../lib/pdfjs';
+import { isRenderCancelled, renderPageWithCancellation } from '../lib/pdfRender';
 import { requestPdfSaveTarget } from '../lib/saveFile';
+import { clearSession, loadSession, saveSession } from '../lib/sessionStore';
 import { isSupportedImageLikeFile, normalizeMediaFile } from '../lib/mediaFiles';
+import { useBeforeUnload } from '../lib/useBeforeUnload';
 import { useFlipListAnimation } from '../lib/useFlipListAnimation';
-import { useCardDragImage } from '../lib/dragImage';
+import { applyCardDragImage } from '../lib/dragImage';
 import { getDroppedFiles, hasDraggedFiles } from '../lib/dropFiles';
+import { moveItem } from '../lib/listReorder';
 
 function getPreviewPageCount(item) {
   if (!item) return 1;
   if (item.type === 'pdf') return Math.max(1, Number(item.pageCount) || 1);
-  if (item.type === 'pdf-group') return Math.max(1, item.pages?.length || Number(item.pageCount) || 1);
+  if (item.type === 'pdf-group')
+    return Math.max(1, item.pages?.length || Number(item.pageCount) || 1);
   return 1;
 }
 
@@ -26,14 +51,23 @@ function getPreviewPageInfo(item, previewPageIndex = 0) {
   const safePageIndex = Math.min(pageCount - 1, Math.max(0, previewPageIndex));
 
   if (!item) {
-    return { label: 'Page 1 of 1', pageCount: 1, safePageIndex: 0, renderPageIndex: 0, rotation: 0 };
+    return {
+      label: 'Halaman 1 dari 1',
+      pageCount: 1,
+      safePageIndex: 0,
+      renderPageIndex: 0,
+      rotation: 0
+    };
   }
 
   if (item.type === 'pdf-page') {
     const sourcePageNumber = (item.pageIndex ?? 0) + 1;
-    const sourcePageCount = Math.max(sourcePageNumber, Number(item.sourcePageCount) || sourcePageNumber);
+    const sourcePageCount = Math.max(
+      sourcePageNumber,
+      Number(item.sourcePageCount) || sourcePageNumber
+    );
     return {
-      label: `Page ${sourcePageNumber} of ${sourcePageCount}`,
+      label: `Halaman ${sourcePageNumber} dari ${sourcePageCount}`,
       pageCount: 1,
       safePageIndex: 0,
       renderPageIndex: item.pageIndex ?? 0,
@@ -44,9 +78,12 @@ function getPreviewPageInfo(item, previewPageIndex = 0) {
   if (item.type === 'pdf-group') {
     const groupPage = item.pages?.[safePageIndex] ?? item.pages?.[0] ?? {};
     const sourcePageNumber = (groupPage.pageIndex ?? 0) + 1;
-    const sourcePageCount = Math.max(sourcePageNumber, Number(groupPage.sourcePageCount) || Number(item.sourcePageCount) || sourcePageNumber);
+    const sourcePageCount = Math.max(
+      sourcePageNumber,
+      Number(groupPage.sourcePageCount) || Number(item.sourcePageCount) || sourcePageNumber
+    );
     return {
-      label: `Group page ${safePageIndex + 1} of ${pageCount} - Source page ${sourcePageNumber} of ${sourcePageCount}`,
+      label: `Halaman grup ${safePageIndex + 1} dari ${pageCount} - Halaman asli ${sourcePageNumber} dari ${sourcePageCount}`,
       pageCount,
       safePageIndex,
       renderPageIndex: groupPage.pageIndex ?? 0,
@@ -56,7 +93,7 @@ function getPreviewPageInfo(item, previewPageIndex = 0) {
 
   if (item.type === 'pdf') {
     return {
-      label: `Page ${safePageIndex + 1} of ${pageCount}`,
+      label: `Halaman ${safePageIndex + 1} dari ${pageCount}`,
       pageCount,
       safePageIndex,
       renderPageIndex: safePageIndex,
@@ -65,7 +102,7 @@ function getPreviewPageInfo(item, previewPageIndex = 0) {
   }
 
   return {
-    label: 'Page 1 of 1',
+    label: 'Halaman 1 dari 1',
     pageCount: 1,
     safePageIndex: 0,
     renderPageIndex: 0,
@@ -94,7 +131,8 @@ function PreviewModal({
   const pageInfo = getPreviewPageInfo(item, previewPageIndex);
   const canGoPrevPreview = canGoPrevPage || canGoPrev;
   const canGoNextPreview = canGoNextPage || canGoNext;
-  const usesRenderedRotation = item.type === 'pdf' || item.type === 'pdf-page' || item.type === 'pdf-group';
+  const usesRenderedRotation =
+    item.type === 'pdf' || item.type === 'pdf-page' || item.type === 'pdf-group';
 
   return (
     <PagePreviewModal
@@ -113,56 +151,77 @@ function PreviewModal({
   );
 }
 
-function rotateCanvas(canvas, rotationDegrees) {
-  const normalizedRotation = ((rotationDegrees % 360) + 360) % 360;
-  if (normalizedRotation === 0) {
-    return canvas;
-  }
-
-  const quarterTurn = normalizedRotation % 180 !== 0;
-  const rotatedCanvas = document.createElement('canvas');
-  rotatedCanvas.width = quarterTurn ? canvas.height : canvas.width;
-  rotatedCanvas.height = quarterTurn ? canvas.width : canvas.height;
-
-  const context = rotatedCanvas.getContext('2d');
-  if (!context) {
-    return canvas;
-  }
-
-  context.save();
-  context.translate(rotatedCanvas.width / 2, rotatedCanvas.height / 2);
-  context.rotate(normalizedRotation * (Math.PI / 180));
-  context.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
-  context.restore();
-  return rotatedCanvas;
+function MergeReviewModal({ open, items, totalPages, includePageNumbers, onClose, onConfirm }) {
+  return (
+    <ModalOverlay open={open} onClose={onClose} labelledBy="merge-review-title">
+      <div className="confirm-modal merge-review-modal">
+        <div className="confirm-header">
+          <h2 id="merge-review-title" className="confirm-title">
+            Review Gabungan
+          </h2>
+        </div>
+        <div className="confirm-body">
+          <p className="confirm-text">
+            {items.length} file{items.length === 1 ? '' : 's'} dan {totalPages} halaman
+            {totalPages === 1 ? '' : 's'} akan ditulis ke PDF.{' '}
+            {includePageNumbers ? 'Nomor halaman akan ditambahkan.' : 'Nomor halaman dimatikan.'}
+          </p>
+          <ol className="merge-review-list">
+            {items.map((item, index) => (
+              <li key={item.id}>
+                <span className="merge-review-index">{index + 1}</span>
+                <span className="merge-review-name">
+                  {item.sourceName || item.file?.name || 'File'}
+                </span>
+                <span className="merge-review-count">{getPreviewPageCount(item)}p</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+        <div className="confirm-footer">
+          <div className="confirm-actions">
+            <button type="button" className="confirm-button secondary" onClick={onClose}>
+              Batal
+            </button>
+            <button type="button" className="confirm-button primary" onClick={onConfirm}>
+              Merge &amp; Download
+            </button>
+          </div>
+        </div>
+      </div>
+    </ModalOverlay>
+  );
 }
 
 function GroupChangesModal({ open, fileName, message, onSaveEdited, onDiscardChanges }) {
   if (!open) return null;
 
   return (
-    <div className="confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="merge-group-confirm-title">
+    <ModalOverlay open={open} onClose={onDiscardChanges} labelledBy="merge-group-confirm-title">
       <div className="confirm-modal simple-confirm-modal merge-group-confirm-modal">
         <div className="confirm-header">
-          <h2 id="merge-group-confirm-title" className="confirm-title">Breakdown Changes</h2>
+          <h2 id="merge-group-confirm-title" className="confirm-title">
+            Perubahan Breakdown
+          </h2>
         </div>
         <div className="confirm-body">
           <p className="confirm-text">
-            {message || `${fileName} has breakdown changes. Save the edited pages as one group, or restore the original file?`}
+            {message ||
+              `${fileName} memiliki perubahan breakdown. Simpan halaman yang diedit sebagai satu grup, atau kembalikan ke file asli?`}
           </p>
         </div>
         <div className="confirm-footer">
           <div className="confirm-actions">
             <button type="button" className="confirm-button secondary" onClick={onDiscardChanges}>
-              Restore
+              Kembalikan
             </button>
             <button type="button" className="confirm-button primary" onClick={onSaveEdited}>
-              Save
+              Simpan
             </button>
           </div>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -176,6 +235,8 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
   const [draggedIndex, setDraggedIndex] = useState(null);
   const [dropTargetIndex, setDropTargetIndex] = useState(null);
   const [isGrayscale, setIsGrayscale] = useState(false);
+  const [includePageNumbers, setIncludePageNumbers] = useState(true);
+  const [isReviewOpen, setIsReviewOpen] = useState(false);
   const [isFileDropActive, setIsFileDropActive] = useState(false);
   const [previewFileId, setPreviewFileId] = useState(null);
   const [previewPageIndex, setPreviewPageIndex] = useState(0);
@@ -185,7 +246,14 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
   const [status, setStatus] = useState(null);
-  const { setItemRef: setFileCardRef, rememberPositions } = useFlipListAnimation(uploadedFiles, file => file.id);
+  const { setItemRef: setFileCardRef, rememberPositions } = useFlipListAnimation(
+    uploadedFiles,
+    file => file.id
+  );
+
+  useBeforeUnload(uploadedFiles.length > 0);
+  const isHydratedRef = useRef(false);
+  const restoreAttemptedRef = useRef(false);
 
   const imgInputRef = useRef(null);
   const dragItem = useRef(null);
@@ -220,16 +288,85 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
     setCurrentFilePage(prev => Math.min(Math.max(1, prev), totalFilePages));
   }, [totalFilePages]);
 
-  useEffect(() => () => {
-    previousBlobUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
-    onSessionChange(false);
+  useEffect(
+    () => () => {
+      previousBlobUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
+      onSessionChange(false);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (restoreAttemptedRef.current) return;
+    restoreAttemptedRef.current = true;
+
+    (async () => {
+      try {
+        const saved = await loadSession('merge-files');
+        if (!saved) return;
+
+        const restored = (saved.files ?? [])
+          .filter(item => item?.file)
+          .map(item => {
+            let preview = item.preview ?? '';
+            if (!preview && item.type === 'image') {
+              try {
+                preview = URL.createObjectURL(item.file);
+              } catch {
+                preview = '';
+              }
+            }
+            return { ...item, preview };
+          });
+
+        if (restored.length) {
+          setUploadedFiles(restored);
+          if (typeof saved.isGrayscale === 'boolean') setIsGrayscale(saved.isGrayscale);
+          if (typeof saved.includePageNumbers === 'boolean') {
+            setIncludePageNumbers(saved.includePageNumbers);
+          }
+        }
+      } catch (error) {
+        console.error(error);
+      } finally {
+        isHydratedRef.current = true;
+      }
+    })();
   }, []);
 
-  const activePreviewIndex = previewFileId ? uploadedFiles.findIndex(file => file.id === previewFileId) : -1;
+  useEffect(() => {
+    if (!isHydratedRef.current) return undefined;
+
+    if (!uploadedFiles.length) {
+      void clearSession('merge-files');
+      return undefined;
+    }
+
+    const handle = window.setTimeout(() => {
+      void saveSession('merge-files', {
+        isGrayscale,
+        includePageNumbers,
+        files: uploadedFiles.map(item => ({
+          ...item,
+          preview: item.preview?.startsWith('blob:') ? '' : item.preview
+        }))
+      });
+    }, 400);
+
+    return () => window.clearTimeout(handle);
+  }, [uploadedFiles, isGrayscale, includePageNumbers]);
+
+  const activePreviewIndex = previewFileId
+    ? uploadedFiles.findIndex(file => file.id === previewFileId)
+    : -1;
   const activePreviewItem = activePreviewIndex >= 0 ? uploadedFiles[activePreviewIndex] : null;
   const activePreviewPageInfo = getPreviewPageInfo(activePreviewItem, previewPageIndex);
   const selectedFileCount = selectedFileIds.length;
   const allFilesSelected = uploadedFiles.length > 0 && selectedFileCount === uploadedFiles.length;
+  const totalMergedPages = useMemo(
+    () => uploadedFiles.reduce((sum, item) => sum + getPreviewPageCount(item), 0),
+    [uploadedFiles]
+  );
 
   useEffect(() => {
     setPreviewPageIndex(0);
@@ -251,6 +388,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
     }
 
     let isCancelled = false;
+    const controller = new AbortController();
 
     const renderPreview = async () => {
       setIsPreviewModalLoading(true);
@@ -259,7 +397,11 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
       let canvas = null;
       let previewCanvas = null;
       try {
-        if (activePreviewItem.type === 'pdf' || activePreviewItem.type === 'pdf-page' || activePreviewItem.type === 'pdf-group') {
+        if (
+          activePreviewItem.type === 'pdf' ||
+          activePreviewItem.type === 'pdf-page' ||
+          activePreviewItem.type === 'pdf-group'
+        ) {
           const pageInfo = getPreviewPageInfo(activePreviewItem, previewPageIndex);
           const arrayBuffer = await activePreviewItem.file.arrayBuffer();
           const pdfjsLib = getPdfJsLib();
@@ -271,7 +413,12 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
           canvas = document.createElement('canvas');
           canvas.width = viewport.width;
           canvas.height = viewport.height;
-          await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+          await renderPageWithCancellation(
+            page,
+            canvas.getContext('2d'),
+            viewport,
+            controller.signal
+          );
           previewCanvas = rotateCanvas(canvas, pageInfo.rotation ?? 0);
           if (isGrayscale) {
             applyCanvasGrayscale(previewCanvas);
@@ -286,6 +433,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
           setPreviewImageUrl(activePreviewItem.preview || '');
         }
       } catch (error) {
+        if (isRenderCancelled(error)) return;
         console.error(error);
         if (!isCancelled) {
           setPreviewImageUrl(activePreviewItem.preview || '');
@@ -297,7 +445,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
           clearCanvas(previewCanvas);
         }
         if (pdfProxy) {
-          await pdfProxy.destroy();
+          await destroyPdfProxy(pdfProxy);
         }
         if (!isCancelled) {
           setIsPreviewModalLoading(false);
@@ -309,6 +457,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
 
     return () => {
       isCancelled = true;
+      controller.abort();
     };
   }, [activePreviewItem, previewPageIndex, isGrayscale]);
 
@@ -346,7 +495,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
         pageCount: pdfProxy.numPages || 1
       };
     } finally {
-      await pdfProxy.destroy();
+      await destroyPdfProxy(pdfProxy);
     }
   }
 
@@ -371,63 +520,89 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
     if (!validFiles.length) {
       setStatus({
         tone: 'error',
-        title: 'No supported files added',
-        detail: rejectedFiles.length ? rejectedFiles.join('; ') : 'Use PDF, JPG, PNG, or HEIC files.'
+        title: 'Tidak ada file yang didukung',
+        detail: rejectedFiles.length
+          ? rejectedFiles.join('; ')
+          : 'Gunakan file PDF, JPG, PNG, atau HEIC.'
       });
       event.target.value = '';
       return;
     }
 
-    const nextFiles = await Promise.all(
+    const results = await Promise.all(
       validFiles.map(async file => {
         const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
         const sourceFile = file;
-        const normalizedFile = isPdf ? file : await normalizeMediaFile(file);
-        let preview = '';
-        let width = 1;
-        let height = 1;
-        let pageCount = 1;
-        if (isPdf) {
-          try {
-            const pdfPreview = await generatePdfThumbnail(file);
-            preview = pdfPreview.preview;
-            width = pdfPreview.width;
-            height = pdfPreview.height;
-            pageCount = pdfPreview.pageCount;
-          } catch (error) {
-            console.error(error);
+        try {
+          const normalizedFile = isPdf ? file : await normalizeMediaFile(file);
+          let preview = '';
+          let width = 1;
+          let height = 1;
+          let pageCount = 1;
+          if (isPdf) {
+            try {
+              const pdfPreview = await generatePdfThumbnail(file);
+              preview = pdfPreview.preview;
+              width = pdfPreview.width;
+              height = pdfPreview.height;
+              pageCount = pdfPreview.pageCount;
+            } catch (error) {
+              console.error(error);
+            }
+          } else {
+            preview = URL.createObjectURL(normalizedFile);
+            try {
+              const imageBitmap = await createImageBitmap(normalizedFile);
+              width = imageBitmap.width;
+              height = imageBitmap.height;
+              imageBitmap.close();
+            } catch (error) {
+              console.error(error);
+            }
           }
-        } else {
-          preview = URL.createObjectURL(normalizedFile);
-          try {
-            const imageBitmap = await createImageBitmap(normalizedFile);
-            width = imageBitmap.width;
-            height = imageBitmap.height;
-            imageBitmap.close();
-          } catch (error) {
-            console.error(error);
-          }
-        }
 
-        return {
-          file: normalizedFile,
-          sourceName: sourceFile.name,
-          id: crypto.randomUUID(),
-          preview,
-          type: isPdf ? 'pdf' : 'image',
-          rotation: 0,
-          width,
-          height,
-          pageCount
-        };
+          return {
+            file: normalizedFile,
+            sourceName: sourceFile.name,
+            id: crypto.randomUUID(),
+            preview,
+            type: isPdf ? 'pdf' : 'image',
+            rotation: 0,
+            width,
+            height,
+            pageCount
+          };
+        } catch (error) {
+          console.error(`Unable to load file: ${sourceFile.name}`, error);
+          return null;
+        }
       })
     );
 
+    const nextFiles = results.filter(Boolean);
+    const failedFiles = validFiles.filter((_, index) => !results[index]).map(file => file.name);
+
+    if (!nextFiles.length) {
+      setStatus({
+        tone: 'error',
+        title: 'Gagal memuat file',
+        detail: failedFiles.length
+          ? `${failedFiles.length} file tidak bisa dibuka.`
+          : 'File yang dipilih tidak bisa dibuka.'
+      });
+      event.target.value = '';
+      return;
+    }
+
     setUploadedFiles(prev => [...prev, ...nextFiles]);
+    const issueDetails = [...rejectedFiles];
+    if (failedFiles.length) {
+      issueDetails.push(`${failedFiles.length} file tidak bisa dibuka`);
+    }
     setStatus({
-      tone: rejectedFiles.length ? 'info' : 'success',
-      title: rejectedFiles.length ? 'Files added with warnings' : 'Files added',
-      detail: `${nextFiles.length} file${nextFiles.length === 1 ? '' : 's'} ready to merge${rejectedFiles.length ? `. Skipped: ${rejectedFiles.join('; ')}.` : '.'}`
+      tone: issueDetails.length ? 'info' : 'success',
+      title: issueDetails.length ? 'File ditambahkan dengan peringatan' : 'File ditambahkan',
+      detail: `${nextFiles.length} file siap digabung${issueDetails.length ? `. Dilewati: ${issueDetails.join('; ')}.` : '.'}`
     });
     event.target.value = '';
   }
@@ -448,9 +623,9 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
   }
 
   function toggleFileSelection(id) {
-    setSelectedFileIds(prev => (
+    setSelectedFileIds(prev =>
       prev.includes(id) ? prev.filter(fileId => fileId !== id) : [...prev, id]
-    ));
+    );
   }
 
   function toggleAllFilesSelection() {
@@ -478,29 +653,35 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
   }
 
   function rotateFile(id) {
-    setUploadedFiles(prev => prev.map(item => (
-      item.id === id ? { ...item, rotation: (item.rotation ?? 0) + 90 } : item
-    )));
+    setUploadedFiles(prev =>
+      prev.map(item => (item.id === id ? { ...item, rotation: (item.rotation ?? 0) + 90 } : item))
+    );
   }
 
   function rotateSelectedFiles() {
     if (selectedFileIds.length === 0) return;
     const selectedIds = new Set(selectedFileIds);
-    setUploadedFiles(prev => prev.map(item => (
-      selectedIds.has(item.id) ? { ...item, rotation: (item.rotation ?? 0) + 90 } : item
-    )));
+    setUploadedFiles(prev =>
+      prev.map(item =>
+        selectedIds.has(item.id) ? { ...item, rotation: (item.rotation ?? 0) + 90 } : item
+      )
+    );
   }
 
   function reorderFiles(fromIndex, toIndex) {
     if (fromIndex === toIndex || fromIndex === null || toIndex === null) return;
 
     rememberPositions();
-    setUploadedFiles(prev => {
-      const nextFiles = [...prev];
-      const [movedFile] = nextFiles.splice(fromIndex, 1);
-      nextFiles.splice(toIndex, 0, movedFile);
-      return nextFiles;
-    });
+    setUploadedFiles(prev => moveItem(prev, fromIndex, toIndex));
+  }
+
+  function moveFileByOffset(fileId, offset) {
+    const fromIndex = uploadedFiles.findIndex(file => file.id === fileId);
+    const toIndex = fromIndex + offset;
+    if (fromIndex < 0 || toIndex < 0 || toIndex >= uploadedFiles.length) return;
+
+    rememberPositions();
+    setUploadedFiles(prev => moveItem(prev, fromIndex, toIndex));
   }
 
   function handleDragStart(event, index) {
@@ -509,7 +690,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
     setDropTargetIndex(index);
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', String(index));
-    useCardDragImage(event);
+    applyCardDragImage(event);
   }
 
   function handleDragOver(event, index) {
@@ -610,12 +791,15 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
   function formatPageCount(file) {
     if (file.type === 'pdf-page') {
       const pageNumber = (file.pageIndex ?? 0) + 1;
-      const sourcePageCount = Math.max(pageNumber, Number(file.sourcePageCount) || Number(file.pageCount) || pageNumber);
-      return `Page ${pageNumber} of ${sourcePageCount}`;
+      const sourcePageCount = Math.max(
+        pageNumber,
+        Number(file.sourcePageCount) || Number(file.pageCount) || pageNumber
+      );
+      return `Halaman ${pageNumber} dari ${sourcePageCount}`;
     }
 
     const pageCount = Math.max(1, Number(file.pageCount) || 1);
-    return `${pageCount} ${pageCount === 1 ? 'Page' : 'Pages'}`;
+    return `${pageCount} ${pageCount === 1 ? 'Halaman' : 'Halaman'}`;
   }
 
   function getBreakdownGroupState(id) {
@@ -624,26 +808,32 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
 
     const sourceFileId = targetPage.sourceFileId;
     const sourcePageCount = Math.max(1, Number(targetPage.sourcePageCount) || 1);
-    const sourcePages = uploadedFiles.filter(file => file.type === 'pdf-page' && file.sourceFileId === sourceFileId);
+    const sourcePages = uploadedFiles.filter(
+      file => file.type === 'pdf-page' && file.sourceFileId === sourceFileId
+    );
     const pagePositions = sourcePages
       .map(file => ({ file, index: uploadedFiles.findIndex(item => item.id === file.id) }))
       .filter(entry => entry.index >= 0)
       .sort((a, b) => a.index - b.index);
 
-    const hasAllPages = sourcePages.length === sourcePageCount &&
-      Array.from({ length: sourcePageCount }, (_, pageIndex) => (
+    const hasAllPages =
+      sourcePages.length === sourcePageCount &&
+      Array.from({ length: sourcePageCount }, (_, pageIndex) =>
         sourcePages.some(file => file.pageIndex === pageIndex)
-      )).every(Boolean);
-    const isStillOriginalOrder = pagePositions.length > 0 && pagePositions.every((entry, index) => (
-      entry.index === pagePositions[0].index + index && entry.file.pageIndex === index
-    ));
-    const hasOriginalRotation = pagePositions.every(entry => (
-      (entry.file.rotation ?? 0) === (entry.file.sourceRotation ?? 0)
-    ));
+      ).every(Boolean);
+    const isStillOriginalOrder =
+      pagePositions.length > 0 &&
+      pagePositions.every(
+        (entry, index) =>
+          entry.index === pagePositions[0].index + index && entry.file.pageIndex === index
+      );
+    const hasOriginalRotation = pagePositions.every(
+      entry => (entry.file.rotation ?? 0) === (entry.file.sourceRotation ?? 0)
+    );
     const changeReasons = [
-      !hasAllPages ? 'some pages were removed' : '',
-      !isStillOriginalOrder ? 'pages were reordered or separated' : '',
-      !hasOriginalRotation ? 'some pages were rotated' : ''
+      !hasAllPages ? 'beberapa halaman dihapus' : '',
+      !isStillOriginalOrder ? 'halaman diatur ulang atau dipisah' : '',
+      !hasOriginalRotation ? 'beberapa halaman diputar' : ''
     ].filter(Boolean);
 
     return {
@@ -655,7 +845,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
       pagePositions,
       hasChanges: changeReasons.length > 0,
       message: changeReasons.length
-        ? `${targetPage.file.name} has changes: ${changeReasons.join(', ')}. Save the edited pages as one group, or restore the original file?`
+        ? `${targetPage.file.name} memiliki perubahan: ${changeReasons.join(', ')}. Simpan halaman yang diedit sebagai satu grup, atau kembalikan ke file asli?`
         : ''
     };
   }
@@ -834,12 +1024,12 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
       console.error(error);
       setStatus({
         tone: 'error',
-        title: 'Breakdown failed',
-        detail: 'The selected PDF pages could not be prepared.'
+        title: 'Breakdown gagal',
+        detail: 'Halaman PDF yang dipilih tidak bisa disiapkan.'
       });
     } finally {
       if (pdfProxy) {
-        await pdfProxy.destroy();
+        await destroyPdfProxy(pdfProxy);
       }
       setIsProcessing(false);
       setLoadingProgress({ current: 0, total: 0 });
@@ -854,7 +1044,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
       setGroupConfirmAction({
         targetId: id,
         fileName: state.targetPage.file.name,
-        message: `${state.targetPage.file.name} has breakdown changes. Save the edited pages as one group, or restore the original file?`
+        message: `${state.targetPage.file.name} memiliki perubahan breakdown. Simpan halaman yang diedit sebagai satu grup, atau kembalikan ke file asli?`
       });
       return;
     }
@@ -864,7 +1054,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
 
   async function convertAndMergeFiles() {
     if (uploadedFiles.length === 0) return;
-    const saveTarget = await requestPdfSaveTarget('Merged_Document');
+    const saveTarget = await requestPdfSaveTarget('Dokumen_Gabungan');
     if (!saveTarget) return;
 
     setIsProcessing(true);
@@ -873,6 +1063,16 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
       const pdfDoc = await PDFDocument.create();
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
       let pageNumber = 1;
+
+      function drawPageNumber(page, width) {
+        if (includePageNumbers) {
+          const label = String(pageNumber);
+          const size = 10;
+          const textWidth = font.widthOfTextAtSize(label, size);
+          page.drawText(label, { x: width / 2 - textWidth / 2, y: 20, size, font });
+        }
+        pageNumber += 1;
+      }
 
       async function openPdfProxy(file) {
         const pdfjsLib = getPdfJsLib();
@@ -891,7 +1091,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
           const renderViewport = page.getViewport({ scale: renderScale });
           canvas = document.createElement('canvas');
           const context = canvas.getContext('2d');
-          if (!context) throw new Error('Canvas is not supported.');
+          if (!context) throw new Error('Canvas tidak didukung.');
 
           canvas.width = Math.max(1, Math.round(renderViewport.width));
           canvas.height = Math.max(1, Math.round(renderViewport.height));
@@ -907,8 +1107,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
           const pageHeight = outputCanvas.height / renderScale;
           const outputPage = pdfDoc.addPage([pageWidth, pageHeight]);
           outputPage.drawImage(image, { x: 0, y: 0, width: pageWidth, height: pageHeight });
-          outputPage.drawText(String(pageNumber), { x: pageWidth / 2 - 10, y: 20, size: 10, font });
-          pageNumber += 1;
+          drawPageNumber(outputPage, pageWidth);
         } finally {
           page?.cleanup();
           clearCanvas(canvas);
@@ -927,7 +1126,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
             await addRenderedPdfPage(pdfProxy, entry.pageIndex, entry.rotation);
           }
         } finally {
-          await pdfProxy.destroy();
+          await destroyPdfProxy(pdfProxy);
         }
       }
 
@@ -938,27 +1137,34 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
         if (item.type === 'pdf-group') {
           if (isGrayscale) {
             const groupPages = item.pages ?? [];
-            await addRenderedPdfPages(item, groupPages.map(sourcePage => ({
-              pageIndex: sourcePage.pageIndex ?? 0,
-              rotation: ((sourcePage.rotation ?? 0) + (item.rotation ?? 0)) % 360
-            })));
+            await addRenderedPdfPages(
+              item,
+              groupPages.map(sourcePage => ({
+                pageIndex: sourcePage.pageIndex ?? 0,
+                rotation: ((sourcePage.rotation ?? 0) + (item.rotation ?? 0)) % 360
+              }))
+            );
             continue;
           }
 
           const arrayBuffer = await item.file.arrayBuffer();
           const sourcePdf = await PDFDocument.load(arrayBuffer);
           const groupPages = item.pages ?? [];
-          const copiedPages = await pdfDoc.copyPages(sourcePdf, groupPages.map(page => page.pageIndex ?? 0));
+          const copiedPages = await pdfDoc.copyPages(
+            sourcePdf,
+            groupPages.map(page => page.pageIndex ?? 0)
+          );
           copiedPages.forEach((page, copiedIndex) => {
             const sourcePage = groupPages[copiedIndex] ?? {};
             const rotation = (sourcePage.rotation ?? 0) + (item.rotation ?? 0);
             if (rotation) {
-              page.setRotation(degrees((((page.getRotation().angle ?? 0) + rotation) % 360 + 360) % 360));
+              page.setRotation(
+                degrees(((((page.getRotation().angle ?? 0) + rotation) % 360) + 360) % 360)
+              );
             }
             pdfDoc.addPage(page);
             const { width } = page.getSize();
-            page.drawText(String(pageNumber), { x: width / 2 - 10, y: 20, size: 10, font });
-            pageNumber += 1;
+            drawPageNumber(page, width);
           });
           continue;
         }
@@ -966,10 +1172,12 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
         if (item.type === 'pdf' || item.type === 'pdf-page') {
           if (isGrayscale) {
             if (item.type === 'pdf-page') {
-              await addRenderedPdfPages(item, [{
-                pageIndex: item.pageIndex ?? 0,
-                rotation: getEffectiveRotation(item)
-              }]);
+              await addRenderedPdfPages(item, [
+                {
+                  pageIndex: item.pageIndex ?? 0,
+                  rotation: getEffectiveRotation(item)
+                }
+              ]);
             } else {
               const pageCount = item.pageCount || 1;
               await addRenderedPdfPages(
@@ -985,40 +1193,49 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
 
           const arrayBuffer = await item.file.arrayBuffer();
           const sourcePdf = await PDFDocument.load(arrayBuffer);
-          const pageIndices = item.type === 'pdf-page'
-            ? [item.pageIndex ?? 0]
-            : sourcePdf.getPageIndices();
+          const pageIndices =
+            item.type === 'pdf-page' ? [item.pageIndex ?? 0] : sourcePdf.getPageIndices();
           const copiedPages = await pdfDoc.copyPages(sourcePdf, pageIndices);
           copiedPages.forEach(page => {
             if (item.rotation) {
-              page.setRotation(degrees((((page.getRotation().angle ?? 0) + getEffectiveRotation(item)) % 360 + 360) % 360));
+              page.setRotation(
+                degrees(
+                  ((((page.getRotation().angle ?? 0) + getEffectiveRotation(item)) % 360) + 360) %
+                    360
+                )
+              );
             }
             pdfDoc.addPage(page);
             const { width } = page.getSize();
-            page.drawText(String(pageNumber), { x: width / 2 - 10, y: 20, size: 10, font });
-            pageNumber += 1;
+            drawPageNumber(page, width);
           });
         } else {
-          const normalizedRotation = ((item.rotation ?? 0) % 360 + 360) % 360;
-          const processed = await preprocessImageForPdf(item.file, normalizedRotation, { grayscale: isGrayscale });
+          const normalizedRotation = (((item.rotation ?? 0) % 360) + 360) % 360;
+          const processed = await preprocessImageForPdf(item.file, normalizedRotation, {
+            grayscale: isGrayscale
+          });
           const embeddedImage = await pdfDoc.embedJpg(processed.bytes);
 
           const isLandscape = processed.pixelWidth > processed.pixelHeight;
-          const pageSize = isLandscape ? { width: 841.89, height: 595.28 } : { width: 595.28, height: 841.89 };
+          const pageSize = isLandscape
+            ? { width: 841.89, height: 595.28 }
+            : { width: 595.28, height: 841.89 };
           const page = pdfDoc.addPage([pageSize.width, pageSize.height]);
 
           const margin = 36; // 0.5 inch
           const maxWidth = pageSize.width - margin * 2;
           const maxHeight = pageSize.height - margin * 2;
-          const scale = Math.min(maxWidth / processed.pixelWidth, maxHeight / processed.pixelHeight);
+          const scale = Math.min(
+            maxWidth / processed.pixelWidth,
+            maxHeight / processed.pixelHeight
+          );
           const drawWidth = processed.pixelWidth * scale;
           const drawHeight = processed.pixelHeight * scale;
           const x = (pageSize.width - drawWidth) / 2;
           const y = (pageSize.height - drawHeight) / 2;
 
           page.drawImage(embeddedImage, { x, y, width: drawWidth, height: drawHeight });
-          page.drawText(String(pageNumber), { x: pageSize.width / 2 - 10, y: 20, size: 10, font });
-          pageNumber += 1;
+          drawPageNumber(page, pageSize.width);
         }
       }
 
@@ -1030,15 +1247,15 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
       await saveTarget.save(new Blob([pdfBytes], { type: 'application/pdf' }));
       setStatus({
         tone: 'success',
-        title: 'Merged PDF saved',
-        detail: `${saveTarget.name} saved.`
+        title: 'PDF gabungan tersimpan',
+        detail: `${saveTarget.name} tersimpan.`
       });
     } catch (error) {
       console.error(error);
       setStatus({
         tone: 'error',
-        title: 'Merge failed',
-        detail: error.message || 'The selected files could not be merged.'
+        title: 'Gagal menggabung',
+        detail: error.message || 'File yang dipilih tidak bisa digabung.'
       });
     } finally {
       setIsProcessing(false);
@@ -1047,7 +1264,9 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
   }
 
   function handleSaveEditedGroup() {
-    const state = groupConfirmAction?.targetId ? getBreakdownGroupState(groupConfirmAction.targetId) : null;
+    const state = groupConfirmAction?.targetId
+      ? getBreakdownGroupState(groupConfirmAction.targetId)
+      : null;
     if (state) {
       saveEditedGroup(state);
     }
@@ -1055,7 +1274,9 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
   }
 
   function handleDiscardGroupChanges() {
-    const state = groupConfirmAction?.targetId ? getBreakdownGroupState(groupConfirmAction.targetId) : null;
+    const state = groupConfirmAction?.targetId
+      ? getBreakdownGroupState(groupConfirmAction.targetId)
+      : null;
     if (state) {
       restoreOriginalGroup(state);
     }
@@ -1065,20 +1286,22 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
   return (
     <>
       <section
-        className={isFileDropActive ? 'panel merge-main-panel file-drop-active' : 'panel merge-main-panel'}
+        className={
+          isFileDropActive ? 'panel merge-main-panel file-drop-active' : 'panel merge-main-panel'
+        }
         onDragOver={handleFileDragOver}
         onDragLeave={handleFileDragLeave}
         onDrop={handleFileDrop}
       >
         <div className="toolbar merge-main-toolbar">
           <div>
-            <h2 className="brand-title merge-title">File Merger & Converter</h2>
-            <p className="brand-subtitle">Combine images and PDFs into a single PDF</p>
+            <h2 className="brand-title merge-title">Gabung & Konversi File</h2>
+            <p className="brand-subtitle">Gabungkan gambar dan PDF menjadi satu PDF</p>
           </div>
           <div className="merge-actions">
             <button className="secondary-button" onClick={() => imgInputRef.current?.click()}>
               <PlusCircle size={16} />
-              Add Files
+              Tambah File
             </button>
             <button
               type="button"
@@ -1086,25 +1309,57 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
               onClick={() => setIsGrayscale(prev => !prev)}
             >
               <Palette size={16} />
-              {isGrayscale ? 'B&W ON' : 'COLOR'}
+              {isGrayscale ? 'B&W ON' : 'WARNA'}
+            </button>
+            <button
+              type="button"
+              className={includePageNumbers ? 'pdf-filter-button active' : 'pdf-filter-button'}
+              onClick={() => setIncludePageNumbers(prev => !prev)}
+              title="Cetak nomor halaman pada PDF gabungan"
+            >
+              <Hash size={16} />
+              {includePageNumbers ? 'Nomor ON' : 'Tanpa Nomor'}
             </button>
             {uploadedFiles.length > 0 && (
-              <button className="primary-button" onClick={convertAndMergeFiles}>
-                <FileCheck size={16} />
-                Merge & Download
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => setIsReviewOpen(true)}
+                >
+                  <Eye size={16} />
+                  Review
+                </button>
+                <button className="primary-button" onClick={convertAndMergeFiles}>
+                  <FileCheck size={16} />
+                  Merge & Download
+                </button>
+              </>
             )}
           </div>
         </div>
 
-        <input ref={imgInputRef} type="file" hidden multiple accept="image/png,image/jpeg,image/jpg,image/heic,.heic,application/pdf,.pdf" onChange={handleFileUpload} />
+        <input
+          ref={imgInputRef}
+          type="file"
+          hidden
+          multiple
+          accept="image/png,image/jpeg,image/jpg,image/heic,.heic,application/pdf,.pdf"
+          onChange={handleFileUpload}
+        />
         <StatusBanner status={status} />
 
         {uploadedFiles.length === 0 ? (
-          <button type="button" className="dropzone merge-empty-dropzone" onClick={() => imgInputRef.current?.click()}>
+          <button
+            type="button"
+            className="dropzone merge-empty-dropzone"
+            onClick={() => imgInputRef.current?.click()}
+          >
             <Files size={56} />
-            <span className="field-value">No files added yet</span>
-            <span className="muted">Drop PDF or image files here to start merging.</span>
+            <span className="field-value">Belum ada file ditambahkan</span>
+            <span className="muted">
+              Seret file PDF atau gambar ke sini untuk mulai menggabung.
+            </span>
           </button>
         ) : (
           <>
@@ -1112,23 +1367,23 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
               <div className="page-actions merge-selection-actions">
                 <button type="button" className="ghost-button" onClick={toggleAllFilesSelection}>
                   <CheckSquare size={16} />
-                  {allFilesSelected ? 'Deselect' : 'Select All'}
+                  {allFilesSelected ? 'Batal Pilih' : 'Pilih Semua'}
                 </button>
                 {selectedFileCount > 0 && (
                   <>
                     <button type="button" className="ghost-button" onClick={rotateSelectedFiles}>
                       <RotateCw size={16} />
-                      Rotate ({selectedFileCount})
+                      Putar ({selectedFileCount})
                     </button>
                     <button type="button" className="danger-button" onClick={removeSelectedFiles}>
                       <Trash2 size={16} />
-                      Remove ({selectedFileCount})
+                      Hapus ({selectedFileCount})
                     </button>
                   </>
                 )}
               </div>
               {selectedFileCount > 0 && (
-                <span className="merge-selection-summary">{selectedFileCount} selected</span>
+                <span className="merge-selection-summary">{selectedFileCount} dipilih</span>
               )}
             </div>
 
@@ -1137,7 +1392,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
               pageSize={filePageSize}
               currentPage={safeCurrentFilePage}
               onPageChange={setCurrentFilePage}
-              itemLabel="Files"
+              itemLabel="File"
               pageSizeOptions={GRID_PAGE_SIZE_OPTIONS}
               onPageSizeChange={nextSize => {
                 setFilePageSize(nextSize);
@@ -1149,82 +1404,119 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
                 const index = visibleFileStartIndex + localIndex;
                 const isSelected = selectedFileIds.includes(file.id);
                 return (
-              <article
-                key={file.id}
-                ref={element => setFileCardRef(file.id, element)}
-                className={[
-                  'page-card',
-                  isSelected ? 'selected' : '',
-                  isPortrait(file) ? 'portrait-card' : 'landscape-card',
-                  draggedIndex === index ? 'dragging' : '',
-                  dropTargetIndex === index ? 'drop-target-before' : '',
-                  dropTargetIndex === uploadedFiles.length && index === uploadedFiles.length - 1 ? 'drop-target-after' : ''
-                ].filter(Boolean).join(' ')}
-                draggable
-                onDragStart={event => handleDragStart(event, index)}
-                onDragOver={event => handleDragOver(event, index)}
-                onDrop={handleDrop}
-                onDragEnd={handleDragEnd}
-              >
-                <button
-                  type="button"
-                  className="page-checkbox"
-                  aria-label={isSelected ? `Deselect ${file.file.name}` : `Select ${file.file.name}`}
-                  aria-pressed={isSelected}
-                  onClick={() => toggleFileSelection(file.id)}
-                >
-                  {isSelected && <Check size={18} />}
-                </button>
-                <div className="page-preview" onClick={() => toggleFileSelection(file.id)}>
-                  {getCardPreview(file) ? (
-                    <div
-                      className={[
-                        'page-preview-frame',
-                        isSourcePortrait(file) ? 'source-portrait' : 'source-landscape',
-                        isGrayscale ? 'grayscale' : ''
-                      ].filter(Boolean).join(' ')}
-                      style={{ transform: `rotate(${getCardRotation(file)}deg)` }}
+                  <article
+                    key={file.id}
+                    ref={element => setFileCardRef(file.id, element)}
+                    className={[
+                      'page-card',
+                      isSelected ? 'selected' : '',
+                      isPortrait(file) ? 'portrait-card' : 'landscape-card',
+                      draggedIndex === index ? 'dragging' : '',
+                      dropTargetIndex === index ? 'drop-target-before' : '',
+                      dropTargetIndex === uploadedFiles.length && index === uploadedFiles.length - 1
+                        ? 'drop-target-after'
+                        : ''
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    draggable
+                    onDragStart={event => handleDragStart(event, index)}
+                    onDragOver={event => handleDragOver(event, index)}
+                    onDrop={handleDrop}
+                    onDragEnd={handleDragEnd}
+                  >
+                    <button
+                      type="button"
+                      className="page-checkbox"
+                      aria-label={
+                        isSelected ? `Batal pilih ${file.file.name}` : `Pilih ${file.file.name}`
+                      }
+                      aria-pressed={isSelected}
+                      onClick={() => toggleFileSelection(file.id)}
                     >
-                      <img src={getCardPreview(file)} alt={file.file.name} />
-                    </div>
-                  ) : (
-                    <div className={`page-preview-placeholder ${isSourcePortrait(file) ? 'source-portrait' : 'source-landscape'}`}>
-                      <div className="preview-skeleton" />
-                      <span>Preview is not available</span>
-                    </div>
-                  )}
-                  <div className="page-count-badge">{formatPageCount(file)}</div>
-                  <div className="page-badge">#{index + 1}</div>
-                  <div className="orientation-badge">{isPortrait(file) ? 'Portrait' : 'Landscape'}</div>
-                  <div className="rotation-badge">{getEffectiveRotation(file)}&deg;</div>
-                </div>
-                <div className={canBreakdownFile(file) || canGroupBackPages(file) ? 'page-footer merge-page-footer four-actions' : 'page-footer merge-page-footer'}>
-                  <button className="ghost-button" onClick={() => setPreviewFileId(file.id)}>
-                    <Eye size={16} />
-                    Preview
-                  </button>
-                  {canBreakdownFile(file) && (
-                    <button className="ghost-button" onClick={() => breakdownFile(file.id)} title="Break PDF into page cards">
-                      <Ungroup size={16} />
-                      Breakdown
+                      {isSelected && <Check size={18} />}
                     </button>
-                  )}
-                  {canGroupBackPages(file) && (
-                    <button className="ghost-button" onClick={() => groupBackPages(file.id)} title="Group pages back into one file">
-                      <FileStack size={16} />
-                      Group
-                    </button>
-                  )}
-                  <button className="ghost-button" onClick={() => rotateFile(file.id)} title="Rotate 90 degrees">
-                    <RotateCw size={16} />
-                    Rotate
-                  </button>
-                  <button className="danger-button" onClick={() => removeFile(file.id)}>
-                    <Trash2 size={16} />
-                    Remove
-                  </button>
-                </div>
-              </article>
+                    <div className="page-preview" onClick={() => toggleFileSelection(file.id)}>
+                      {getCardPreview(file) ? (
+                        <div
+                          className={[
+                            'page-preview-frame',
+                            isSourcePortrait(file) ? 'source-portrait' : 'source-landscape',
+                            isGrayscale ? 'grayscale' : ''
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                          style={{ transform: `rotate(${getCardRotation(file)}deg)` }}
+                        >
+                          <img src={getCardPreview(file)} alt={file.file.name} />
+                        </div>
+                      ) : (
+                        <div
+                          className={`page-preview-placeholder ${isSourcePortrait(file) ? 'source-portrait' : 'source-landscape'}`}
+                        >
+                          <div className="preview-skeleton" />
+                          <span>Pratinjau tidak tersedia</span>
+                        </div>
+                      )}
+                      <div className="page-count-badge">{formatPageCount(file)}</div>
+                      <div className="page-badge">#{index + 1}</div>
+                      <div className="orientation-badge">
+                        {isPortrait(file) ? 'Potret' : 'Lanskap'}
+                      </div>
+                      <div className="rotation-badge">{getEffectiveRotation(file)}&deg;</div>
+                      <CardMoveControls
+                        label={`file ${index + 1}`}
+                        canMoveBackward={index > 0}
+                        canMoveForward={index < uploadedFiles.length - 1}
+                        onMoveBackward={() => moveFileByOffset(file.id, -1)}
+                        onMoveForward={() => moveFileByOffset(file.id, 1)}
+                      />
+                    </div>
+                    <div
+                      className={
+                        canBreakdownFile(file) || canGroupBackPages(file)
+                          ? 'page-footer merge-page-footer four-actions'
+                          : 'page-footer merge-page-footer'
+                      }
+                    >
+                      <button className="ghost-button" onClick={() => setPreviewFileId(file.id)}>
+                        <Eye size={16} />
+                        Pratinjau
+                      </button>
+                      {canBreakdownFile(file) && (
+                        <button
+                          className="ghost-button"
+                          onClick={() => breakdownFile(file.id)}
+                          title="Pecah PDF menjadi kartu per halaman"
+                        >
+                          <Ungroup size={16} />
+                          Breakdown
+                        </button>
+                      )}
+                      {canGroupBackPages(file) && (
+                        <button
+                          className="ghost-button"
+                          onClick={() => groupBackPages(file.id)}
+                          title="Gabungkan halaman kembali menjadi satu file"
+                        >
+                          <FileStack size={16} />
+                          Group
+                        </button>
+                      )}
+                      <button
+                        className="ghost-button"
+                        onClick={() => rotateFile(file.id)}
+                        title="Putar 90 derajat"
+                      >
+                        <RotateCw size={16} />
+                        Putar
+                      </button>
+                      <button className="danger-button" onClick={() => removeFile(file.id)}>
+                        <Trash2 size={16} />
+                        Hapus
+                      </button>
+                    </div>
+                  </article>
                 );
               })}
             </section>
@@ -1254,7 +1546,9 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
           }
         }}
         onPrevPage={() => setPreviewPageIndex(current => Math.max(0, current - 1))}
-        onNextPage={() => setPreviewPageIndex(current => Math.min(activePreviewPageInfo.pageCount - 1, current + 1))}
+        onNextPage={() =>
+          setPreviewPageIndex(current => Math.min(activePreviewPageInfo.pageCount - 1, current + 1))
+        }
       />
       <GroupChangesModal
         open={Boolean(groupConfirmAction)}
@@ -1262,6 +1556,17 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
         message={groupConfirmAction?.message}
         onSaveEdited={handleSaveEditedGroup}
         onDiscardChanges={handleDiscardGroupChanges}
+      />
+      <MergeReviewModal
+        open={isReviewOpen}
+        items={uploadedFiles}
+        totalPages={totalMergedPages}
+        includePageNumbers={includePageNumbers}
+        onClose={() => setIsReviewOpen(false)}
+        onConfirm={() => {
+          setIsReviewOpen(false);
+          convertAndMergeFiles();
+        }}
       />
       {isProcessing && <ProcessingOverlay loadingProgress={loadingProgress} />}
     </>

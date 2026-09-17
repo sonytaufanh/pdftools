@@ -3,12 +3,24 @@ import JSZip from 'jszip';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import PaginationControls from '../components/PaginationControls';
 import PagePreviewModal from '../components/PagePreviewModal';
+import CardMoveControls from '../components/CardMoveControls';
+import ModalOverlay from '../components/ModalOverlay';
 import ProcessingOverlay from '../components/ProcessingOverlay';
 import StatusBanner from '../components/StatusBanner';
-import { applyCanvasGrayscale, canvasToArrayBuffer, canvasToBlob, clearCanvas } from '../lib/canvas';
-import { getPdfJsLib } from '../lib/pdfjs';
+import {
+  applyCanvasGrayscale,
+  canvasToArrayBuffer,
+  canvasToBlob,
+  clearCanvas,
+  rotateCanvas
+} from '../lib/canvas';
+import { destroyPdfProxy, getPdfJsLib } from '../lib/pdfjs';
+import { moveItem } from '../lib/listReorder';
+import { isRenderCancelled, renderPageWithCancellation } from '../lib/pdfRender';
+import { clearSession, loadSession, saveSession } from '../lib/sessionStore';
+import { useBeforeUnload } from '../lib/useBeforeUnload';
 import { useFlipListAnimation } from '../lib/useFlipListAnimation';
-import { useCardDragImage } from '../lib/dragImage';
+import { applyCardDragImage } from '../lib/dragImage';
 import { getDroppedFiles, hasDraggedFiles } from '../lib/dropFiles';
 import {
   AlertTriangle,
@@ -79,6 +91,16 @@ const WATERMARK_SIZE_LIMITS = {
   image: { min: 1, max: 48 }
 };
 
+const WATERMARK_POSITION_OPTIONS = [
+  { value: 'center', label: 'Tengah' },
+  { value: 'top', label: 'Atas' },
+  { value: 'bottom', label: 'Bawah' },
+  { value: 'top-left', label: 'Kiri atas' },
+  { value: 'top-right', label: 'Kanan atas' },
+  { value: 'bottom-left', label: 'Kiri bawah' },
+  { value: 'bottom-right', label: 'Kanan bawah' }
+];
+
 function getWatermarkFontOption(value) {
   return WATERMARK_FONT_OPTIONS.find(option => option.value === value) ?? WATERMARK_FONT_OPTIONS[1];
 }
@@ -99,20 +121,10 @@ function getWatermarkSignature(settings) {
 function getWatermarkAnchor(width, height, position = 'center') {
   const insetX = width * 0.16;
   const insetY = height * 0.16;
-  const [vertical, horizontal] = position === 'center'
-    ? ['middle', 'center']
-    : position.split('-');
+  const [vertical, horizontal] = position === 'center' ? ['middle', 'center'] : position.split('-');
 
-  const x = horizontal === 'left'
-    ? insetX
-    : horizontal === 'right'
-      ? width - insetX
-      : width / 2;
-  const y = vertical === 'top'
-    ? height - insetY
-    : vertical === 'bottom'
-      ? insetY
-      : height / 2;
+  const x = horizontal === 'left' ? insetX : horizontal === 'right' ? width - insetX : width / 2;
+  const y = vertical === 'top' ? height - insetY : vertical === 'bottom' ? insetY : height / 2;
 
   return { x, y };
 }
@@ -120,8 +132,8 @@ function getWatermarkAnchor(width, height, position = 'center') {
 function rotatePoint(x, y, degreesValue) {
   const radians = degreesValue * (Math.PI / 180);
   return {
-    x: (x * Math.cos(radians)) - (y * Math.sin(radians)),
-    y: (x * Math.sin(radians)) + (y * Math.cos(radians))
+    x: x * Math.cos(radians) - y * Math.sin(radians),
+    y: x * Math.sin(radians) + y * Math.cos(radians)
   };
 }
 
@@ -147,9 +159,13 @@ function clampWatermarkSize(value, type = 'text', fallback = DEFAULT_WATERMARK_S
 
 function hexToRgbColor(hexColor) {
   const normalized = hexColor.replace('#', '');
-  const value = normalized.length === 3
-    ? normalized.split('').map(char => `${char}${char}`).join('')
-    : normalized;
+  const value =
+    normalized.length === 3
+      ? normalized
+          .split('')
+          .map(char => `${char}${char}`)
+          .join('')
+      : normalized;
 
   const red = Number.parseInt(value.slice(0, 2), 16) / 255;
   const green = Number.parseInt(value.slice(2, 4), 16) / 255;
@@ -161,15 +177,23 @@ function ToastViewport({ toasts, onDismiss }) {
   return (
     <div className="toast-viewport" aria-live="polite" aria-atomic="true">
       {toasts.map(toast => {
-        const Icon = toast.tone === 'error' ? AlertTriangle : toast.tone === 'success' ? CheckCircle2 : Info;
+        const Icon =
+          toast.tone === 'error' ? AlertTriangle : toast.tone === 'success' ? CheckCircle2 : Info;
         return (
           <div key={toast.id} className={`toast-card ${toast.tone ?? 'info'}`}>
-            <div className="toast-icon"><Icon size={16} /></div>
+            <div className="toast-icon">
+              <Icon size={16} />
+            </div>
             <div className="toast-copy">
               <div className="toast-title">{toast.title}</div>
               {toast.detail && <div className="toast-detail">{toast.detail}</div>}
             </div>
-            <button type="button" className="toast-close" onClick={() => onDismiss(toast.id)} aria-label="Dismiss notification">
+            <button
+              type="button"
+              className="toast-close"
+              onClick={() => onDismiss(toast.id)}
+              aria-label="Tutup notifikasi"
+            >
               <X size={14} />
             </button>
           </div>
@@ -179,28 +203,44 @@ function ToastViewport({ toasts, onDismiss }) {
   );
 }
 
-function ActionConfirmModal({ open, tone = 'warning', title, message, confirmLabel, onCancel, onConfirm }) {
+function ActionConfirmModal({
+  open,
+  tone = 'warning',
+  title,
+  message,
+  confirmLabel,
+  onCancel,
+  onConfirm
+}) {
   if (!open) return null;
 
   return (
-    <div className="confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="action-confirm-title">
+    <ModalOverlay open={open} onClose={onCancel} labelledBy="action-confirm-title">
       <div className={`confirm-modal simple-confirm-modal action-confirm-modal ${tone}`}>
         <div className="confirm-header">
-          <h2 id="action-confirm-title" className="confirm-title">{title}</h2>
+          <h2 id="action-confirm-title" className="confirm-title">
+            {title}
+          </h2>
         </div>
         <div className="confirm-body">
           <p className="confirm-text">{message}</p>
         </div>
         <div className="confirm-footer">
           <div className="confirm-actions">
-            <button type="button" className="confirm-button secondary" onClick={onCancel}>Cancel</button>
-            <button type="button" className={`confirm-button ${tone === 'danger' ? 'danger' : 'primary'}`} onClick={onConfirm}>
+            <button type="button" className="confirm-button secondary" onClick={onCancel}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className={`confirm-button ${tone === 'danger' ? 'danger' : 'primary'}`}
+              onClick={onConfirm}
+            >
               {confirmLabel}
             </button>
           </div>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -222,11 +262,14 @@ function PageCard({
   onDragStart,
   onDragOver,
   onDrop,
-  onDragEnd
+  onDragEnd,
+  canMoveBackward,
+  canMoveForward,
+  onMoveBackward,
+  onMoveForward
 }) {
   const cardRef = useRef(null);
   const [isVisible, setIsVisible] = useState(false);
-  const originalRotation = page.originalRotation ?? 0;
   const rotationOffset = page.rotationOffset ?? 0;
   const baseWidth = page.pageWidth ?? 1;
   const baseHeight = page.pageHeight ?? 1;
@@ -243,14 +286,17 @@ function PageCard({
   useEffect(() => {
     const node = cardRef.current;
     if (!node) return undefined;
-    const observer = new IntersectionObserver(entries => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          setIsVisible(true);
-          observer.disconnect();
-        }
-      });
-    }, { rootMargin: '250px' });
+    const observer = new IntersectionObserver(
+      entries => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            setIsVisible(true);
+            observer.disconnect();
+          }
+        });
+      },
+      { rootMargin: '250px' }
+    );
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
@@ -272,7 +318,9 @@ function PageCard({
         isPortrait ? 'portrait-card' : 'landscape-card',
         isDragging ? 'dragging' : '',
         isDropTarget ? 'drop-target-before' : ''
-      ].filter(Boolean).join(' ')}
+      ]
+        .filter(Boolean)
+        .join(' ')}
       draggable
       onDragStart={event => onDragStart(event, page.index)}
       onDragOver={event => onDragOver(event, page.index)}
@@ -289,29 +337,46 @@ function PageCard({
               'page-preview-frame',
               sourceIsPortrait ? 'source-portrait' : 'source-landscape',
               isGrayscale ? 'grayscale' : ''
-            ].filter(Boolean).join(' ')}
+            ]
+              .filter(Boolean)
+              .join(' ')}
             style={{ transform: `rotate(${frameRotation}deg)` }}
           >
-            <img src={page.previewUrl} alt={`Page ${visualIndex + 1}`} />
+            <img src={page.previewUrl} alt={`Halaman ${visualIndex + 1}`} />
           </div>
         ) : (
-          <div className={`page-preview-placeholder ${sourceIsPortrait ? 'source-portrait' : 'source-landscape'}`}>
-            <div className={page.isPreviewLoading ? 'preview-skeleton loading' : 'preview-skeleton'} />
-            <span>{page.isPreviewLoading ? 'Rendering preview...' : 'Preview will load on demand'}</span>
+          <div
+            className={`page-preview-placeholder ${sourceIsPortrait ? 'source-portrait' : 'source-landscape'}`}
+          >
+            <div
+              className={page.isPreviewLoading ? 'preview-skeleton loading' : 'preview-skeleton'}
+            />
+            <span>
+              {page.isPreviewLoading
+                ? 'Merender pratinjau...'
+                : 'Pratinjau dimuat sesuai permintaan'}
+            </span>
           </div>
         )}
         <div className="page-badge">#{visualIndex + 1}</div>
-        <div className="orientation-badge">{isPortrait ? 'Portrait' : 'Landscape'}</div>
+        <div className="orientation-badge">{isPortrait ? 'Potret' : 'Lanskap'}</div>
         <div className="rotation-badge">{userRotation}&deg;</div>
+        <CardMoveControls
+          label={`page ${visualIndex + 1}`}
+          canMoveBackward={canMoveBackward}
+          canMoveForward={canMoveForward}
+          onMoveBackward={onMoveBackward}
+          onMoveForward={onMoveForward}
+        />
       </div>
       <div className="page-footer">
         <button className="ghost-button" onClick={() => onPreview(page.index)}>
           <Eye size={16} />
-          Preview
+          Pratinjau
         </button>
         <button className="ghost-button" onClick={() => onRotate(page.index)}>
           <RotateCw size={16} />
-          Rotate
+          Putar
         </button>
         <button className="danger-button" onClick={() => onDownload(page)}>
           <Download size={16} />
@@ -334,7 +399,9 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
   const [exportFormat, setExportFormat] = useState('pdf');
   const [watermarkSettings, setWatermarkSettings] = useState(DEFAULT_WATERMARK_SETTINGS);
   const [draftWatermarkColor, setDraftWatermarkColor] = useState(DEFAULT_WATERMARK_SETTINGS.color);
-  const [draftWatermarkSize, setDraftWatermarkSize] = useState(String(DEFAULT_WATERMARK_SETTINGS.size));
+  const [draftWatermarkSize, setDraftWatermarkSize] = useState(
+    String(DEFAULT_WATERMARK_SETTINGS.size)
+  );
   const [fileName, setFileName] = useState('');
   const [openingFileName, setOpeningFileName] = useState('');
   const [isOpeningPdf, setIsOpeningPdf] = useState(false);
@@ -344,7 +411,7 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
   const [status, setStatus] = useState(null);
-  const [processingState, setProcessingState] = useState({ label: 'Processing...', detail: '' });
+  const [processingState, setProcessingState] = useState({ label: 'Memproses...', detail: '' });
   const [toasts, setToasts] = useState([]);
   const [confirmAction, setConfirmAction] = useState(null);
   const [previewPageIndex, setPreviewPageIndex] = useState(null);
@@ -355,7 +422,12 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
   const [currentPageBatch, setCurrentPageBatch] = useState(1);
   const [pageBatchSize, setPageBatchSize] = useState(20);
   const [isFileDropActive, setIsFileDropActive] = useState(false);
-  const { setItemRef: setPageCardRef, rememberPositions } = useFlipListAnimation(pages, page => page.index);
+  const { setItemRef: setPageCardRef, rememberPositions } = useFlipListAnimation(
+    pages,
+    page => page.index
+  );
+
+  useBeforeUnload(Boolean(pdfDoc));
 
   const fileInputRef = useRef(null);
   const watermarkImageInputRef = useRef(null);
@@ -363,15 +435,24 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
   const sourcePdfRef = useRef(null);
   const pagesRef = useRef([]);
   const dragPageIndexRef = useRef(null);
+  const previewAbortRef = useRef(new Map());
+  const isHydratedRef = useRef(false);
+  const restoreAttemptedRef = useRef(false);
   const initialPreviewQueuedRef = useRef(false);
   const toastTimeoutsRef = useRef(new Map());
   const watermarkImageAssetRef = useRef({ src: '', promise: null, image: null });
   const maxFileSizeMb = 500;
   const fastOpenThresholdMb = 25;
 
-  const allSelected = useMemo(() => pages.length > 0 && selectedPages.length === pages.length, [pages.length, selectedPages.length]);
+  const allSelected = useMemo(
+    () => pages.length > 0 && selectedPages.length === pages.length,
+    [pages.length, selectedPages.length]
+  );
   const selectedCount = selectedPages.length;
-  const watermarkSignature = useMemo(() => getWatermarkSignature(watermarkSettings), [watermarkSettings]);
+  const watermarkSignature = useMemo(
+    () => getWatermarkSignature(watermarkSettings),
+    [watermarkSettings]
+  );
   const totalPageBatches = Math.max(1, Math.ceil(pages.length / pageBatchSize));
   const safeCurrentPageBatch = Math.min(currentPageBatch, totalPageBatches);
   const visiblePageStartIndex = (safeCurrentPageBatch - 1) * pageBatchSize;
@@ -417,15 +498,93 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     preloadInitialPreviews();
   }, [pdfDoc, pages]);
 
-  useEffect(() => () => {
-    toastTimeoutsRef.current.forEach(timeout => window.clearTimeout(timeout));
-    releasePdfProxy();
+  useEffect(
+    () => () => {
+      toastTimeoutsRef.current.forEach(timeout => window.clearTimeout(timeout));
+      abortAllPreviews();
+      releasePdfProxy();
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (restoreAttemptedRef.current) return;
+    restoreAttemptedRef.current = true;
+
+    (async () => {
+      const source = await loadSession('pdf-tools:source');
+      const state = source ? await loadSession('pdf-tools:state') : null;
+      try {
+        if (source?.blob) {
+          const bytes = await source.blob.arrayBuffer();
+          await openPdfFromSource(
+            {
+              name: source.fileName || 'document.pdf',
+              size: bytes.byteLength,
+              arrayBuffer: async () => bytes
+            },
+            state
+          );
+        }
+      } catch (error) {
+        console.error(error);
+      } finally {
+        isHydratedRef.current = true;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!isHydratedRef.current) return;
+
+    if (!pdfDoc) {
+      void clearSession('pdf-tools:source');
+      void clearSession('pdf-tools:state');
+      return;
+    }
+
+    void saveSession('pdf-tools:source', {
+      fileName,
+      blob: new Blob([pdfDoc], { type: 'application/pdf' })
+    });
+  }, [fileName, pdfDoc]);
+
+  useEffect(() => {
+    if (!isHydratedRef.current || !pdfDoc) return undefined;
+
+    const handle = window.setTimeout(() => {
+      void saveSession('pdf-tools:state', {
+        order: pages.map(page => page.index),
+        rotations: Object.fromEntries(pages.map(page => [page.index, page.rotationOffset ?? 0])),
+        isGrayscale,
+        exportFormat,
+        watermarkSettings,
+        ranges,
+        isRangeSplitterEnabled,
+        pageBatchSize,
+        currentPageBatch
+      });
+    }, 400);
+
+    return () => window.clearTimeout(handle);
+  }, [
+    currentPageBatch,
+    exportFormat,
+    isGrayscale,
+    isRangeSplitterEnabled,
+    pageBatchSize,
+    pages,
+    pdfDoc,
+    ranges,
+    watermarkSettings
+  ]);
 
   useEffect(() => {
     if (previewPageIndex === null) return undefined;
 
     let isCancelled = false;
+    const controller = new AbortController();
 
     const renderPreviewModal = async () => {
       const pageState = pagesRef.current.find(page => page.index === previewPageIndex);
@@ -435,16 +594,28 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       let canvas = null;
       let previewCanvas = null;
       try {
-        canvas = await renderPageToCanvas(pageState, 1.8, isGrayscale, watermarkSettings);
+        canvas = await renderPageToCanvas(
+          pageState,
+          1.8,
+          isGrayscale,
+          watermarkSettings,
+          null,
+          controller.signal
+        );
         previewCanvas = rotateCanvas(canvas, pageState.rotationOffset ?? 0);
         const nextImageUrl = previewCanvas.toDataURL('image/jpeg', 0.92);
         if (isCancelled) return;
         setPreviewImageUrl(nextImageUrl);
       } catch (error) {
+        if (isRenderCancelled(error)) return;
         console.error(error);
         if (!isCancelled) {
           setPreviewImageUrl('');
-          pushToast('Page preview could not be rendered.', `Page ${previewPageIndex + 1} is still available for download.`, 'error');
+          pushToast(
+            'Page preview could not be rendered.',
+            `Page ${previewPageIndex + 1} is still available for download.`,
+            'error'
+          );
         }
       } finally {
         clearCanvas(canvas);
@@ -461,6 +632,7 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
 
     return () => {
       isCancelled = true;
+      controller.abort();
     };
   }, [isGrayscale, pages, previewPageIndex, watermarkSignature]);
 
@@ -473,11 +645,17 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         return;
       }
       if (event.key === 'ArrowLeft') {
-        setPreviewPageIndex(currentIndex => (currentIndex !== null && currentIndex > 0 ? currentIndex - 1 : currentIndex));
+        setPreviewPageIndex(currentIndex =>
+          currentIndex !== null && currentIndex > 0 ? currentIndex - 1 : currentIndex
+        );
         return;
       }
       if (event.key === 'ArrowRight') {
-        setPreviewPageIndex(currentIndex => (currentIndex !== null && currentIndex < pagesRef.current.length - 1 ? currentIndex + 1 : currentIndex));
+        setPreviewPageIndex(currentIndex =>
+          currentIndex !== null && currentIndex < pagesRef.current.length - 1
+            ? currentIndex + 1
+            : currentIndex
+        );
       }
     };
 
@@ -537,15 +715,16 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     const extension = extensionMatch?.[1] ?? '';
     const defaultBase = extension ? filename.slice(0, -extension.length) : filename;
     const suggestedName = filename;
-    const mimeType = extension.toLowerCase() === '.pdf'
-      ? 'application/pdf'
-      : extension.toLowerCase() === '.zip'
-        ? 'application/zip'
-        : extension.toLowerCase() === '.png'
-          ? 'image/png'
-          : extension.toLowerCase() === '.jpg' || extension.toLowerCase() === '.jpeg'
-            ? 'image/jpeg'
-            : 'application/octet-stream';
+    const mimeType =
+      extension.toLowerCase() === '.pdf'
+        ? 'application/pdf'
+        : extension.toLowerCase() === '.zip'
+          ? 'application/zip'
+          : extension.toLowerCase() === '.png'
+            ? 'image/png'
+            : extension.toLowerCase() === '.jpg' || extension.toLowerCase() === '.jpeg'
+              ? 'image/jpeg'
+              : 'application/octet-stream';
 
     if ('showSaveFilePicker' in window) {
       try {
@@ -576,9 +755,10 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     const requestedName = window.prompt('Output name', defaultBase);
     if (requestedName === null) return null;
     const trimmedName = requestedName.trim() || defaultBase;
-    const finalName = extension && !trimmedName.toLowerCase().endsWith(extension.toLowerCase())
-      ? `${trimmedName}${extension}`
-      : trimmedName;
+    const finalName =
+      extension && !trimmedName.toLowerCase().endsWith(extension.toLowerCase())
+        ? `${trimmedName}${extension}`
+        : trimmedName;
 
     return {
       name: finalName,
@@ -641,7 +821,13 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       const anchor = getWatermarkAnchor(canvas.width, canvas.height, watermark.position);
       context.save();
       context.globalAlpha = 0.28;
-      context.drawImage(image, anchor.x - drawWidth / 2, anchor.y - drawHeight / 2, drawWidth, drawHeight);
+      context.drawImage(
+        image,
+        anchor.x - drawWidth / 2,
+        anchor.y - drawHeight / 2,
+        drawWidth,
+        drawHeight
+      );
       context.restore();
       return canvas;
     }
@@ -650,7 +836,13 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     if (!normalizedText) return canvas;
 
     const fontOption = getWatermarkFontOption(watermark.font);
-    const fontSize = Math.max(8, Math.round(Math.min(canvas.width, canvas.height) * ((Number(watermark.size) || DEFAULT_WATERMARK_SETTINGS.size) / 100)));
+    const fontSize = Math.max(
+      8,
+      Math.round(
+        Math.min(canvas.width, canvas.height) *
+          ((Number(watermark.size) || DEFAULT_WATERMARK_SETTINGS.size) / 100)
+      )
+    );
     const anchor = getWatermarkAnchor(canvas.width, canvas.height, watermark.position);
     const watermarkAngle = getWatermarkTextAngle(canvas.width, canvas.height);
     context.save();
@@ -676,9 +868,13 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     const sizeRatio = (Number(watermark.size) || DEFAULT_WATERMARK_SETTINGS.size) / 100;
 
     if (watermark.type === 'image' && watermark.imageDataUrl) {
-      const imageBytes = await fetch(watermark.imageDataUrl).then(response => response.arrayBuffer());
+      const imageBytes = await fetch(watermark.imageDataUrl).then(response =>
+        response.arrayBuffer()
+      );
       const isPng = watermark.imageDataUrl.startsWith('data:image/png');
-      const image = isPng ? await pdfInstance.embedPng(imageBytes) : await pdfInstance.embedJpg(imageBytes);
+      const image = isPng
+        ? await pdfInstance.embedPng(imageBytes)
+        : await pdfInstance.embedJpg(imageBytes);
       const maxWidth = width * sizeRatio;
       const maxHeight = height * sizeRatio;
       const scale = Math.min(maxWidth / image.width, maxHeight / image.height);
@@ -739,11 +935,20 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     }
 
     setPages(prev => prev.map(page => (page.index === pageIndex ? updatedPage : page)));
-    pagesRef.current = pagesRef.current.map(page => (page.index === pageIndex ? updatedPage : page));
+    pagesRef.current = pagesRef.current.map(page =>
+      page.index === pageIndex ? updatedPage : page
+    );
     return updatedPage;
   }
 
-  async function renderPageToCanvas(pageState, scale = 2.5, forceGrayscale = false, watermark = watermarkSettings, rotationOverride = null) {
+  async function renderPageToCanvas(
+    pageState,
+    scale = 2.5,
+    forceGrayscale = false,
+    watermark = watermarkSettings,
+    rotationOverride = null,
+    signal = null
+  ) {
     let pdfProxy = pdfProxyRef.current;
     if (!pdfProxy) {
       const pdfjsLib = getPdfJsLib();
@@ -752,20 +957,20 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       pdfProxyRef.current = pdfProxy;
     }
 
-    const resolvedPage = await ensurePageMetadata(pageState.index) ?? pageState;
+    const resolvedPage = (await ensurePageMetadata(pageState.index)) ?? pageState;
     let page = null;
     let canvas = null;
     let shouldKeepCanvas = false;
 
     try {
       page = await pdfProxy.getPage(pageState.index + 1);
-      const viewportRotation = rotationOverride ?? (resolvedPage.originalRotation ?? 0);
+      const viewportRotation = rotationOverride ?? resolvedPage.originalRotation ?? 0;
       const viewport = page.getViewport({ scale, rotation: viewportRotation });
       canvas = document.createElement('canvas');
       const context = canvas.getContext('2d');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
-      await page.render({ canvasContext: context, viewport }).promise;
+      await renderPageWithCancellation(page, context, viewport, signal);
 
       if (forceGrayscale) {
         applyCanvasGrayscale(canvas);
@@ -780,30 +985,6 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         clearCanvas(canvas);
       }
     }
-  }
-
-  function rotateCanvas(canvas, rotationDegrees) {
-    const normalizedRotation = ((rotationDegrees % 360) + 360) % 360;
-    if (normalizedRotation === 0) {
-      return canvas;
-    }
-
-    const quarterTurn = normalizedRotation % 180 !== 0;
-    const rotatedCanvas = document.createElement('canvas');
-    rotatedCanvas.width = quarterTurn ? canvas.height : canvas.width;
-    rotatedCanvas.height = quarterTurn ? canvas.width : canvas.height;
-
-    const context = rotatedCanvas.getContext('2d');
-    if (!context) {
-      return canvas;
-    }
-
-    context.save();
-    context.translate(rotatedCanvas.width / 2, rotatedCanvas.height / 2);
-    context.rotate(normalizedRotation * (Math.PI / 180));
-    context.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
-    context.restore();
-    return rotatedCanvas;
   }
 
   async function ensurePreview(pageIndex) {
@@ -827,12 +1008,25 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       return;
     }
 
-    setPages(prev => prev.map(page => (page.index === pageIndex ? { ...page, isPreviewLoading: true } : page)));
+    previewAbortRef.current.get(pageIndex)?.abort();
+    const controller = new AbortController();
+    previewAbortRef.current.set(pageIndex, controller);
+
+    setPages(prev =>
+      prev.map(page => (page.index === pageIndex ? { ...page, isPreviewLoading: true } : page))
+    );
 
     let canvas = null;
     try {
-      const pageState = await ensurePageMetadata(pageIndex) ?? targetPage;
-      canvas = await renderPageToCanvas(pageState, 0.62, isGrayscale, watermarkSettings);
+      const pageState = (await ensurePageMetadata(pageIndex)) ?? targetPage;
+      canvas = await renderPageToCanvas(
+        pageState,
+        0.62,
+        isGrayscale,
+        watermarkSettings,
+        null,
+        controller.signal
+      );
       const previewUrl = canvas.toDataURL('image/jpeg', 0.9);
       const latestPage = pagesRef.current.find(page => page.index === pageIndex);
       const latestPreviewSignature = latestPage
@@ -840,22 +1034,48 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         : previewSignature;
 
       if (latestPreviewSignature !== previewSignature) {
-        setPages(prev => prev.map(page => (
-          page.index === pageIndex ? { ...page, isPreviewLoading: false } : page
-        )));
+        setPages(prev =>
+          prev.map(page => (page.index === pageIndex ? { ...page, isPreviewLoading: false } : page))
+        );
         return;
       }
 
-      setPages(prev => prev.map(page => (
-        page.index === pageIndex ? { ...page, previewUrl, previewSignature, isPreviewLoading: false, pageWidth: pageState.pageWidth, pageHeight: pageState.pageHeight } : page
-      )));
+      setPages(prev =>
+        prev.map(page =>
+          page.index === pageIndex
+            ? {
+                ...page,
+                previewUrl,
+                previewSignature,
+                isPreviewLoading: false,
+                pageWidth: pageState.pageWidth,
+                pageHeight: pageState.pageHeight
+              }
+            : page
+        )
+      );
     } catch (error) {
+      if (isRenderCancelled(error)) return;
       console.error(error);
-      setPages(prev => prev.map(page => (page.index === pageIndex ? { ...page, isPreviewLoading: false } : page)));
-      pushToast('Preview could not be rendered.', `Page ${pageIndex + 1} will remain available without thumbnail.`, 'error');
+      setPages(prev =>
+        prev.map(page => (page.index === pageIndex ? { ...page, isPreviewLoading: false } : page))
+      );
+      pushToast(
+        'Preview could not be rendered.',
+        `Page ${pageIndex + 1} will remain available without thumbnail.`,
+        'error'
+      );
     } finally {
+      if (previewAbortRef.current.get(pageIndex) === controller) {
+        previewAbortRef.current.delete(pageIndex);
+      }
       clearCanvas(canvas);
     }
+  }
+
+  function abortAllPreviews() {
+    previewAbortRef.current.forEach(controller => controller.abort());
+    previewAbortRef.current.clear();
   }
 
   function createPageSkeletons(pageCount, initialPreviewCount) {
@@ -874,9 +1094,7 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
   function releasePdfProxy() {
     const pdfProxy = pdfProxyRef.current;
     pdfProxyRef.current = null;
-    if (pdfProxy?.destroy) {
-      void pdfProxy.destroy().catch(error => console.error(error));
-    }
+    void destroyPdfProxy(pdfProxy);
   }
 
   async function renderInitialPreviewPage(pdfProxy, pageIndex) {
@@ -906,38 +1124,128 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     }
   }
 
+  function applyLoadedSession(pagesData, state) {
+    if (!state) return pagesData;
+
+    if (Array.isArray(state.order) && state.order.length) {
+      const pageMap = new Map(pagesData.map(page => [page.index, page]));
+      const ordered = state.order
+        .map(index => {
+          const page = pageMap.get(index);
+          if (!page) return null;
+          return { ...page, rotationOffset: state.rotations?.[index] ?? page.rotationOffset ?? 0 };
+        })
+        .filter(Boolean);
+      if (ordered.length) return ordered;
+    }
+
+    if (state.rotations) {
+      return pagesData.map(page => ({
+        ...page,
+        rotationOffset: state.rotations[page.index] ?? page.rotationOffset ?? 0
+      }));
+    }
+
+    return pagesData;
+  }
+
+  function finalizeLoadedDocument(arrayBuffer, pageCount, pagesData, state) {
+    const restoredPages = applyLoadedSession(pagesData, state);
+
+    setPdfDoc(arrayBuffer);
+    setPages(restoredPages);
+    setRanges(
+      Array.isArray(state?.ranges) && state.ranges.length
+        ? state.ranges
+        : [{ id: Date.now(), start: 1, end: 1 }]
+    );
+    pagesRef.current = restoredPages;
+    initialPreviewQueuedRef.current = false;
+
+    if (state) {
+      if (typeof state.isGrayscale === 'boolean') setIsGrayscale(state.isGrayscale);
+      if (state.exportFormat) setExportFormat(state.exportFormat);
+      if (state.watermarkSettings) {
+        setWatermarkSettings({ ...DEFAULT_WATERMARK_SETTINGS, ...state.watermarkSettings });
+      }
+      if (typeof state.isRangeSplitterEnabled === 'boolean') {
+        setIsRangeSplitterEnabled(state.isRangeSplitterEnabled);
+      }
+      if (state.pageBatchSize) setPageBatchSize(state.pageBatchSize);
+      if (state.currentPageBatch) setCurrentPageBatch(state.currentPageBatch);
+    }
+
+    setStatus({
+      tone: 'success',
+      title: 'Dokumen siap',
+      detail: `${pageCount} halaman tersedia untuk diedit dan diekspor.`
+    });
+    pushToast('PDF loaded successfully.', `${pageCount} pages are ready for editing.`, 'success');
+    setIsOpeningPdf(false);
+    setOpeningFileName('');
+  }
+
   async function handlePdfUpload(event) {
     const input = event.target;
     const file = input.files?.[0];
     if (!file) return;
+    input.value = '';
+
     if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      pushToast('Only PDF files are supported.', 'Choose or drop a PDF document first.', 'error');
-      input.value = '';
+      pushToast(
+        'Hanya file PDF yang didukung.',
+        'Pilih atau seret dokumen PDF terlebih dahulu.',
+        'error'
+      );
       return;
     }
     if (file.size > maxFileSizeMb * 1024 * 1024) {
-      pushToast('File exceeds upload limit.', `Maximum supported size is ${maxFileSizeMb}MB.`, 'error');
-      input.value = '';
+      pushToast(
+        'File melebihi batas unggah.',
+        `Ukuran maksimum yang didukung adalah ${maxFileSizeMb}MB.`,
+        'error'
+      );
       return;
     }
 
+    await openPdfFromSource(file);
+  }
+
+  async function openPdfFromSource(source, sessionState = null) {
     releasePdfProxy();
+    abortAllPreviews();
     sourcePdfRef.current = null;
     setSelectedPages([]);
     setCurrentPageBatch(1);
-    setFileName(file.name.replace(/\.pdf$/i, ''));
-    setOpeningFileName(file.name);
+    setFileName(source.name.replace(/\.pdf$/i, ''));
+    setOpeningFileName(source.name);
     setOpeningError('');
     setIsOpeningPdf(true);
-    setStatus({ tone: 'loading', title: 'Reading file', detail: `Preparing ${file.name} for document analysis.` });
+    setStatus({
+      tone: 'loading',
+      title: 'Membaca file',
+      detail: `Menyiapkan ${source.name} untuk analisis dokumen.`
+    });
 
     try {
-      const arrayBuffer = await withTimeout(file.arrayBuffer(), 15000, 'Timed out while reading the PDF file.');
+      const arrayBuffer = await withTimeout(
+        source.arrayBuffer(),
+        15000,
+        'Timed out while reading the PDF file.'
+      );
       setLoadingProgress({ current: 0, total: 0 });
 
-      if (file.size <= fastOpenThresholdMb * 1024 * 1024) {
-        setStatus({ tone: 'loading', title: 'Opening document', detail: 'Preparing page structure and initial previews.' });
-        const sourcePdf = await withTimeout(PDFDocument.load(arrayBuffer.slice(0)), 10000, 'Timed out while reading the PDF structure.');
+      if (source.size <= fastOpenThresholdMb * 1024 * 1024) {
+        setStatus({
+          tone: 'loading',
+          title: 'Membuka dokumen',
+          detail: 'Menyiapkan struktur halaman dan pratinjau awal.'
+        });
+        const sourcePdf = await withTimeout(
+          PDFDocument.load(arrayBuffer.slice(0)),
+          10000,
+          'Timed out while reading the PDF structure.'
+        );
         const pageCount = sourcePdf.getPageCount();
         const pdfjsLib = getPdfJsLib();
         const loadingTask = pdfjsLib.getDocument({
@@ -945,7 +1253,11 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
           disableAutoFetch: true,
           disableStream: true
         });
-        const pdfProxy = await withTimeout(loadingTask.promise, 12000, 'Timed out while preparing page previews.');
+        const pdfProxy = await withTimeout(
+          loadingTask.promise,
+          12000,
+          'Timed out while preparing page previews.'
+        );
         const initialPreviewCount = Math.min(pageCount, 4);
         const pagesData = createPageSkeletons(pageCount, initialPreviewCount);
 
@@ -953,27 +1265,26 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         pdfProxyRef.current = pdfProxy;
 
         for (let i = 0; i < initialPreviewCount; i += 1) {
-          setStatus({ tone: 'loading', title: 'Rendering previews', detail: `Preparing page ${i + 1} of ${initialPreviewCount}.` });
+          setStatus({
+            tone: 'loading',
+            title: 'Merender pratinjau',
+            detail: `Preparing page ${i + 1} of ${initialPreviewCount}.`
+          });
           pagesData[i] = {
             ...pagesData[i],
-            ...await renderInitialPreviewPage(pdfProxy, i)
+            ...(await renderInitialPreviewPage(pdfProxy, i))
           };
         }
 
-        setPdfDoc(arrayBuffer);
-        setPages(pagesData);
-        setRanges([{ id: Date.now(), start: 1, end: 1 }]);
-        pagesRef.current = pagesData;
-        initialPreviewQueuedRef.current = false;
-        setStatus({ tone: 'success', title: 'Document ready', detail: `${pageCount} pages are available for editing and export.` });
-        pushToast('PDF loaded successfully.', `${pageCount} pages are ready for editing.`, 'success');
-        setIsOpeningPdf(false);
-        setOpeningFileName('');
-        input.value = '';
+        finalizeLoadedDocument(arrayBuffer, pageCount, pagesData, sessionState);
         return;
       }
 
-      setStatus({ tone: 'loading', title: 'Opening large PDF', detail: 'Document parsing continues in the background while the workspace stays responsive.' });
+      setStatus({
+        tone: 'loading',
+        title: 'Membuka PDF besar',
+        detail: 'Parsing dokumen berlanjut di latar belakang sementara workspace tetap responsif.'
+      });
 
       requestAnimationFrame(async () => {
         try {
@@ -983,7 +1294,11 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
             disableAutoFetch: true,
             disableStream: true
           });
-          const pdfProxy = await withTimeout(loadingTask.promise, 20000, 'Timed out while opening the PDF document.');
+          const pdfProxy = await withTimeout(
+            loadingTask.promise,
+            20000,
+            'Timed out while opening the PDF document.'
+          );
           const pageCount = pdfProxy.numPages;
           const initialPreviewCount = Math.min(pageCount, 4);
           const pagesData = createPageSkeletons(pageCount, initialPreviewCount);
@@ -992,41 +1307,45 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
           sourcePdfRef.current = null;
 
           for (let i = 0; i < initialPreviewCount; i += 1) {
-            setStatus({ tone: 'loading', title: 'Rendering previews', detail: `Preparing page ${i + 1} of ${initialPreviewCount}.` });
+            setStatus({
+              tone: 'loading',
+              title: 'Merender pratinjau',
+              detail: `Menyiapkan halaman ${i + 1} dari ${initialPreviewCount}.`
+            });
             pagesData[i] = {
               ...pagesData[i],
-              ...await renderInitialPreviewPage(pdfProxy, i)
+              ...(await renderInitialPreviewPage(pdfProxy, i))
             };
           }
 
-          setPdfDoc(arrayBuffer);
-          setPages(pagesData);
-          setRanges([{ id: Date.now(), start: 1, end: 1 }]);
-          pagesRef.current = pagesData;
-          initialPreviewQueuedRef.current = false;
-          setStatus({ tone: 'success', title: 'Document ready', detail: `${pageCount} pages are available for editing and export.` });
-          pushToast('PDF loaded successfully.', `${pageCount} pages are ready for editing.`, 'success');
+          finalizeLoadedDocument(arrayBuffer, pageCount, pagesData, sessionState);
         } catch (error) {
           console.error(error);
           releasePdfProxy();
           setOpeningError(error.message || 'Error loading PDF.');
-          setStatus({ tone: 'error', title: 'PDF could not be opened', detail: error.message || 'Error loading PDF.' });
+          setStatus({
+            tone: 'error',
+            title: 'PDF tidak bisa dibuka',
+            detail: error.message || 'Gagal memuat PDF.'
+          });
           pushToast('Document failed to open.', error.message || 'Error loading PDF.', 'error');
         } finally {
           setIsOpeningPdf(false);
           setOpeningFileName('');
-          input.value = '';
         }
       });
     } catch (error) {
       console.error(error);
       releasePdfProxy();
       setOpeningError(error.message || 'Error loading PDF.');
-      setStatus({ tone: 'error', title: 'PDF could not be opened', detail: error.message || 'Error loading PDF.' });
+      setStatus({
+        tone: 'error',
+        title: 'PDF could not be opened',
+        detail: error.message || 'Error loading PDF.'
+      });
       pushToast('Document failed to open.', error.message || 'Error loading PDF.', 'error');
       setIsOpeningPdf(false);
       setOpeningFileName('');
-      input.value = '';
     } finally {
       setLoadingProgress({ current: 0, total: 0 });
     }
@@ -1054,6 +1373,7 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     setIsOpeningPdf(false);
     setOpeningError('');
     setStatus(null);
+    abortAllPreviews();
     releasePdfProxy();
     sourcePdfRef.current = null;
     initialPreviewQueuedRef.current = false;
@@ -1064,7 +1384,8 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
   }
 
   function reorderPagesByIndex(fromPageIndex, toPageIndex) {
-    if (fromPageIndex === null || toPageIndex === null || fromPageIndex === toPageIndex) return fromPageIndex;
+    if (fromPageIndex === null || toPageIndex === null || fromPageIndex === toPageIndex)
+      return fromPageIndex;
 
     let nextDraggedIndex = fromPageIndex;
     rememberPositions();
@@ -1083,13 +1404,27 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     return nextDraggedIndex;
   }
 
+  function movePageByOffset(pageIndex, offset) {
+    const fromIndex = pages.findIndex(page => page.index === pageIndex);
+    const toIndex = fromIndex + offset;
+    if (fromIndex < 0 || toIndex < 0 || toIndex >= pages.length) return;
+
+    rememberPositions();
+    setPages(prev => moveItem(prev, fromIndex, toIndex));
+    setStatus({
+      tone: 'info',
+      title: 'Urutan halaman diperbarui',
+      detail: 'Ekspor akan menggunakan urutan visual halaman saat ini.'
+    });
+  }
+
   function handlePageDragStart(event, pageIndex) {
     dragPageIndexRef.current = pageIndex;
     setDraggedPageIndex(pageIndex);
     setDropTargetPageIndex(pageIndex);
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', String(pageIndex));
-    useCardDragImage(event);
+    applyCardDragImage(event);
   }
 
   function handlePageDragOver(event, pageIndex) {
@@ -1115,7 +1450,11 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     setDropTargetPageIndex(null);
 
     if (hadDrag) {
-      setStatus({ tone: 'info', title: 'Page order updated', detail: 'Exports will use the current visual page order.' });
+      setStatus({
+        tone: 'info',
+        title: 'Page order updated',
+        detail: 'Exports will use the current visual page order.'
+      });
     }
   }
 
@@ -1218,13 +1557,23 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     if (selectedPages.length === 0) return;
     const selectedSet = new Set(selectedPages);
     rememberPositions();
-    setPages(prev => prev.map(page => (
-      selectedSet.has(page.index)
-        ? { ...page, rotationOffset: (page.rotationOffset ?? 0) + 90 }
-        : page
-    )));
-    setStatus({ tone: 'info', title: 'Pages rotated', detail: `${selectedPages.length} selected page${selectedPages.length === 1 ? '' : 's'} rotated clockwise.` });
-    pushToast('Selected pages rotated.', `${selectedPages.length} page${selectedPages.length === 1 ? '' : 's'} updated.`, 'success');
+    setPages(prev =>
+      prev.map(page =>
+        selectedSet.has(page.index)
+          ? { ...page, rotationOffset: (page.rotationOffset ?? 0) + 90 }
+          : page
+      )
+    );
+    setStatus({
+      tone: 'info',
+      title: 'Halaman diputar',
+      detail: `${selectedPages.length} halaman terpilih diputar searah jarum jam.`
+    });
+    pushToast(
+      'Selected pages rotated.',
+      `${selectedPages.length} page${selectedPages.length === 1 ? '' : 's'} updated.`,
+      'success'
+    );
   }
 
   function handleConfirmAction() {
@@ -1237,8 +1586,16 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       setPages(nextPages);
       setSelectedPages([]);
       setRanges(prev => prev.map(range => ({ ...range, start: 1, end: 1 })));
-      setStatus({ tone: 'info', title: 'Pages removed', detail: `${selectedCount} selected pages were removed from the working set.` });
-      pushToast('Selected pages removed.', `${selectedCount} pages were deleted from the current session.`, 'success');
+      setStatus({
+        tone: 'info',
+        title: 'Halaman dihapus',
+        detail: `${selectedCount} halaman terpilih dihapus dari set kerja.`
+      });
+      pushToast(
+        'Selected pages removed.',
+        `${selectedCount} pages were deleted from the current session.`,
+        'success'
+      );
       return;
     }
 
@@ -1253,7 +1610,11 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       setPages(nextPages);
       setSelectedPages([]);
       setRanges([{ id: Date.now(), start: 1, end: 1 }]);
-      setStatus({ tone: 'info', title: 'Range pages removed', detail: `${pagesToDelete.size} pages were deleted from the current working copy.` });
+      setStatus({
+        tone: 'info',
+        title: 'Halaman rentang dihapus',
+        detail: `${pagesToDelete.size} halaman dihapus dari salinan kerja saat ini.`
+      });
       pushToast('Range pages removed.', `${pagesToDelete.size} pages were deleted.`, 'success');
       return;
     }
@@ -1271,7 +1632,9 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
   }
 
   function togglePageSelection(index) {
-    setSelectedPages(prev => (prev.includes(index) ? prev.filter(item => item !== index) : [...prev, index]));
+    setSelectedPages(prev =>
+      prev.includes(index) ? prev.filter(item => item !== index) : [...prev, index]
+    );
   }
 
   function deleteSelectedPages() {
@@ -1279,9 +1642,9 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     requestConfirm({
       action: 'delete-selected',
       tone: 'danger',
-      title: 'Delete Selected Pages',
+      title: 'Hapus Halaman Terpilih',
       message: `${selectedPages.length} selected pages will be removed from the working session.`,
-      confirmLabel: 'Delete'
+      confirmLabel: 'Hapus'
     });
   }
 
@@ -1310,7 +1673,11 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     });
 
     if (pagesToDelete.size === 0) {
-      pushToast('No valid range selected.', 'Adjust the range values before deleting pages.', 'error');
+      pushToast(
+        'No valid range selected.',
+        'Adjust the range values before deleting pages.',
+        'error'
+      );
       return;
     }
 
@@ -1319,9 +1686,10 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       requestConfirm({
         action: 'reset-file',
         tone: 'danger',
-        title: 'All Pages Will Be Removed',
-        message: 'The selected ranges cover the entire document. The file will be closed from the workspace.',
-        confirmLabel: 'Close Document'
+        title: 'Semua Halaman Akan Dihapus',
+        message:
+          'The selected ranges cover the entire document. The file will be closed from the workspace.',
+        confirmLabel: 'Tutup Dokumen'
       });
       return;
     }
@@ -1329,9 +1697,9 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     requestConfirm({
       action: 'delete-ranges',
       tone: 'danger',
-      title: 'Delete Range Pages',
+      title: 'Hapus Halaman Rentang',
       message: `${pagesToDelete.size} pages in the selected ranges will be removed from the working session.`,
-      confirmLabel: 'Delete'
+      confirmLabel: 'Hapus'
     });
   }
 
@@ -1342,7 +1710,10 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     if (single && !saveTarget) return null;
 
     if (single) {
-      setProcessingState({ label: 'Preparing export', detail: `Generating page ${pageData.index + 1} as ${exportFormat.toUpperCase()}.` });
+      setProcessingState({
+        label: 'Menyiapkan ekspor',
+        detail: `Menyiapkan halaman ${pageData.index + 1} sebagai ${exportFormat.toUpperCase()}.`
+      });
       setIsProcessing(true);
     }
 
@@ -1354,8 +1725,14 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       if (exportFormat === 'pdf') {
         extension = 'pdf';
         if (isGrayscale) {
-          const resolvedPage = await ensurePageMetadata(pageData.index) ?? pageData;
-          renderedCanvas = await renderPageToCanvas(resolvedPage, 2.5, true);
+          const resolvedPage = (await ensurePageMetadata(pageData.index)) ?? pageData;
+          renderedCanvas = await renderPageToCanvas(
+            resolvedPage,
+            2.5,
+            true,
+            watermarkSettings,
+            getEffectiveRotation(resolvedPage)
+          );
           const imgBytes = await canvasToArrayBuffer(renderedCanvas, 'image/jpeg', 0.9);
           const nextPdf = await PDFDocument.create();
           const image = await nextPdf.embedJpg(imgBytes);
@@ -1363,11 +1740,11 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
           page.drawImage(image, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
           blob = new Blob([await nextPdf.save()], { type: 'application/pdf' });
         } else {
-          const sourcePdf = sourcePdfRef.current ?? await PDFDocument.load(pdfDoc.slice(0));
+          const sourcePdf = sourcePdfRef.current ?? (await PDFDocument.load(pdfDoc.slice(0)));
           sourcePdfRef.current = sourcePdf;
           const nextPdf = await PDFDocument.create();
           const [copiedPage] = await nextPdf.copyPages(sourcePdf, [pageData.index]);
-          const resolvedPage = await ensurePageMetadata(pageData.index) ?? pageData;
+          const resolvedPage = (await ensurePageMetadata(pageData.index)) ?? pageData;
           copiedPage.setRotation(degrees(getEffectiveRotation(resolvedPage)));
           nextPdf.addPage(copiedPage);
           await applyPdfWatermark(copiedPage, nextPdf, watermarkSettings);
@@ -1376,19 +1753,38 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       } else {
         extension = exportFormat;
         const mime = exportFormat === 'png' ? 'image/png' : 'image/jpeg';
-        const resolvedPage = await ensurePageMetadata(pageData.index) ?? pageData;
-        renderedCanvas = await renderPageToCanvas(resolvedPage, 2.5, isGrayscale);
+        const resolvedPage = (await ensurePageMetadata(pageData.index)) ?? pageData;
+        renderedCanvas = await renderPageToCanvas(
+          resolvedPage,
+          2.5,
+          isGrayscale,
+          watermarkSettings,
+          getEffectiveRotation(resolvedPage)
+        );
         blob = await canvasToBlob(renderedCanvas, mime, 0.95);
       }
 
       const name = `${getOutputBaseName()}_Page_${pageData.index + 1}${isGrayscale ? '_BW' : ''}.${extension}`;
       if (single) {
         await saveTarget.save(blob);
-        setStatus({ tone: 'success', title: 'Page exported', detail: `${saveTarget.name} is ready for download.` });
+        setStatus({
+          tone: 'success',
+          title: 'Halaman diekspor',
+          detail: `${saveTarget.name} siap diunduh.`
+        });
         pushToast('Page exported.', saveTarget.name, 'success');
       }
 
       return { blob, name };
+    } catch (error) {
+      console.error(error);
+      const detail = error?.message || 'The page could not be exported.';
+      pushToast('Export failed.', detail, 'error');
+      if (single) {
+        setStatus({ tone: 'error', title: 'Ekspor gagal', detail });
+        return null;
+      }
+      throw error;
     } finally {
       clearCanvas(renderedCanvas);
       if (single) {
@@ -1402,14 +1798,20 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     const saveTarget = await requestDownloadTarget(zipName);
     if (!saveTarget) return;
 
-    setProcessingState({ label: 'Creating ZIP archive', detail: `Preparing ${indices.length} pages for download.` });
+    setProcessingState({
+      label: 'Creating ZIP archive',
+      detail: `Menyiapkan ${indices.length} halaman untuk diunduh.`
+    });
     setIsProcessing(true);
     const zip = new JSZip();
 
     try {
       for (let i = 0; i < indices.length; i += 1) {
         setLoadingProgress({ current: i + 1, total: indices.length });
-        setProcessingState({ label: 'Creating ZIP archive', detail: `Processing page ${i + 1} of ${indices.length}.` });
+        setProcessingState({
+          label: 'Membuat arsip ZIP',
+          detail: `Memproses halaman ${i + 1} dari ${indices.length}.`
+        });
         const pageData = pages.find(page => page.index === indices[i]);
         const { blob, name } = await downloadItem(pageData, false);
         zip.file(name, blob);
@@ -1417,8 +1819,17 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
 
       const zipContent = await zip.generateAsync({ type: 'blob' });
       await saveTarget.save(zipContent);
-      setStatus({ tone: 'success', title: 'ZIP download ready', detail: `${saveTarget.name} has been generated successfully.` });
+      setStatus({
+        tone: 'success',
+        title: 'ZIP siap diunduh',
+        detail: `${saveTarget.name} berhasil dibuat.`
+      });
       pushToast('ZIP archive generated.', saveTarget.name, 'success');
+    } catch (error) {
+      console.error(error);
+      const detail = error?.message || 'The archive could not be generated.';
+      setStatus({ tone: 'error', title: 'Ekspor ZIP gagal', detail });
+      pushToast('ZIP export failed.', detail, 'error');
     } finally {
       setIsProcessing(false);
       setLoadingProgress({ current: 0, total: 0 });
@@ -1430,21 +1841,37 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     const saveTarget = await requestDownloadTarget(`${getOutputBaseName()}_Merged_Selected.pdf`);
     if (!saveTarget) return;
 
-    setProcessingState({ label: 'Merging selected pages', detail: `Preparing ${selectedPages.length} pages into a single PDF.` });
+    setProcessingState({
+      label: 'Menggabung halaman terpilih',
+      detail: `Menyiapkan ${selectedPages.length} halaman menjadi satu PDF.`
+    });
     setIsProcessing(true);
 
     try {
       const pagesMap = pages.map(page => page.index);
-      const sortedIndices = [...selectedPages].sort((a, b) => pagesMap.indexOf(a) - pagesMap.indexOf(b));
+      const sortedIndices = [...selectedPages].sort(
+        (a, b) => pagesMap.indexOf(a) - pagesMap.indexOf(b)
+      );
       const nextPdf = await PDFDocument.create();
 
       if (isGrayscale) {
         for (let i = 0; i < sortedIndices.length; i += 1) {
           setLoadingProgress({ current: i + 1, total: sortedIndices.length });
-          setProcessingState({ label: 'Merging selected pages', detail: `Rendering page ${i + 1} of ${sortedIndices.length}.` });
+          setProcessingState({
+            label: 'Menggabung halaman terpilih',
+            detail: `Merender halaman ${i + 1} dari ${sortedIndices.length}.`
+          });
           const index = sortedIndices[i];
-          const pageState = await ensurePageMetadata(index) ?? pagesRef.current.find(page => page.index === index);
-          const canvas = await renderPageToCanvas(pageState, 2.5, true);
+          const pageState =
+            (await ensurePageMetadata(index)) ??
+            pagesRef.current.find(page => page.index === index);
+          const canvas = await renderPageToCanvas(
+            pageState,
+            2.5,
+            true,
+            watermarkSettings,
+            getEffectiveRotation(pageState || {})
+          );
           try {
             const imgBytes = await canvasToArrayBuffer(canvas, 'image/jpeg', 0.8);
             const image = await nextPdf.embedJpg(imgBytes);
@@ -1455,12 +1882,14 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
           }
         }
       } else {
-        const sourcePdf = sourcePdfRef.current ?? await PDFDocument.load(pdfDoc.slice(0));
+        const sourcePdf = sourcePdfRef.current ?? (await PDFDocument.load(pdfDoc.slice(0)));
         sourcePdfRef.current = sourcePdf;
         const copiedPages = await nextPdf.copyPages(sourcePdf, sortedIndices);
         for (let i = 0; i < copiedPages.length; i += 1) {
           setLoadingProgress({ current: i + 1, total: copiedPages.length });
-          const pageState = await ensurePageMetadata(sortedIndices[i]) ?? pagesRef.current.find(page => page.index === sortedIndices[i]);
+          const pageState =
+            (await ensurePageMetadata(sortedIndices[i])) ??
+            pagesRef.current.find(page => page.index === sortedIndices[i]);
           if (pageState) copiedPages[i].setRotation(degrees(getEffectiveRotation(pageState)));
           nextPdf.addPage(copiedPages[i]);
           await applyPdfWatermark(copiedPages[i], nextPdf, watermarkSettings);
@@ -1468,11 +1897,19 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       }
 
       await saveTarget.save(new Blob([await nextPdf.save()], { type: 'application/pdf' }));
-      setStatus({ tone: 'success', title: 'Merged PDF ready', detail: `${selectedPages.length} pages were combined into a single document.` });
+      setStatus({
+        tone: 'success',
+        title: 'PDF gabungan siap',
+        detail: `${selectedPages.length} halaman digabung menjadi satu dokumen.`
+      });
       pushToast('Merged PDF generated.', saveTarget.name, 'success');
     } catch (error) {
       console.error(error);
-      setStatus({ tone: 'error', title: 'Merge failed', detail: 'The selected pages could not be combined into a PDF.' });
+      setStatus({
+        tone: 'error',
+        title: 'Gagal menggabung',
+        detail: 'Halaman yang dipilih tidak bisa digabung menjadi PDF.'
+      });
       pushToast('Merge failed.', 'The selected pages could not be combined into a PDF.', 'error');
     } finally {
       setIsProcessing(false);
@@ -1485,17 +1922,23 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     const saveTarget = await requestDownloadTarget(`${getOutputBaseName()}_Ranges.zip`);
     if (!saveTarget) return;
 
-    setProcessingState({ label: 'Splitting ranges', detail: `Preparing ${ranges.length} configured ranges.` });
+    setProcessingState({
+      label: 'Memisah rentang',
+      detail: `Menyiapkan ${ranges.length} rentang terkonfigurasi.`
+    });
     setIsProcessing(true);
     const zip = new JSZip();
 
     try {
-      const sourcePdf = sourcePdfRef.current ?? await PDFDocument.load(pdfDoc.slice(0));
+      const sourcePdf = sourcePdfRef.current ?? (await PDFDocument.load(pdfDoc.slice(0)));
       sourcePdfRef.current = sourcePdf;
 
       for (let i = 0; i < ranges.length; i += 1) {
         setLoadingProgress({ current: i + 1, total: ranges.length });
-        setProcessingState({ label: 'Splitting ranges', detail: `Processing range ${i + 1} of ${ranges.length}.` });
+        setProcessingState({
+          label: 'Memisah rentang',
+          detail: `Memproses rentang ${i + 1} dari ${ranges.length}.`
+        });
         const { start, end } = ranges[i];
         const safeStart = Math.min(start, end);
         const safeEnd = Math.max(start, end);
@@ -1508,13 +1951,25 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         const nextPdf = await PDFDocument.create();
         if (isGrayscale) {
           for (const idx of indices) {
-            const pageState = await ensurePageMetadata(idx) ?? pagesRef.current.find(page => page.index === idx);
-            const canvas = await renderPageToCanvas(pageState, 2.5, true);
+            const pageState =
+              (await ensurePageMetadata(idx)) ?? pagesRef.current.find(page => page.index === idx);
+            const canvas = await renderPageToCanvas(
+              pageState,
+              2.5,
+              true,
+              watermarkSettings,
+              getEffectiveRotation(pageState || {})
+            );
             try {
               const imgBytes = await canvasToArrayBuffer(canvas, 'image/jpeg', 0.8);
               const image = await nextPdf.embedJpg(imgBytes);
               const page = nextPdf.addPage([canvas.width / 2.5, canvas.height / 2.5]);
-              page.drawImage(image, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
+              page.drawImage(image, {
+                x: 0,
+                y: 0,
+                width: page.getWidth(),
+                height: page.getHeight()
+              });
             } finally {
               clearCanvas(canvas);
             }
@@ -1522,22 +1977,35 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         } else {
           const copiedPages = await nextPdf.copyPages(sourcePdf, indices);
           for (let j = 0; j < copiedPages.length; j += 1) {
-            const pageState = await ensurePageMetadata(indices[j]) ?? pagesRef.current.find(page => page.index === indices[j]);
+            const pageState =
+              (await ensurePageMetadata(indices[j])) ??
+              pagesRef.current.find(page => page.index === indices[j]);
             if (pageState) copiedPages[j].setRotation(degrees(getEffectiveRotation(pageState)));
             nextPdf.addPage(copiedPages[j]);
             await applyPdfWatermark(copiedPages[j], nextPdf, watermarkSettings);
           }
         }
 
-        zip.file(`${getOutputBaseName()}_Range_${i + 1}_Pages_${safeStart}-${safeEnd}.pdf`, await nextPdf.save());
+        zip.file(
+          `${getOutputBaseName()}_Range_${i + 1}_Pages_${safeStart}-${safeEnd}.pdf`,
+          await nextPdf.save()
+        );
       }
 
       await saveTarget.save(await zip.generateAsync({ type: 'blob' }));
-      setStatus({ tone: 'success', title: 'Range export ready', detail: `${ranges.length} ranges were packaged as a ZIP file.` });
+      setStatus({
+        tone: 'success',
+        title: 'Ekspor rentang siap',
+        detail: `${ranges.length} rentang dikemas sebagai file ZIP.`
+      });
       pushToast('Range ZIP generated.', saveTarget.name, 'success');
     } catch (error) {
       console.error(error);
-      setStatus({ tone: 'error', title: 'Range export failed', detail: 'The configured ranges could not be exported.' });
+      setStatus({
+        tone: 'error',
+        title: 'Ekspor rentang gagal',
+        detail: 'Rentang yang dikonfigurasi tidak bisa diekspor.'
+      });
       pushToast('Range export failed.', 'The configured ranges could not be exported.', 'error');
     } finally {
       setIsProcessing(false);
@@ -1556,36 +2024,59 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         <section className="panel pdf-empty-panel">
           <div className="toolbar pdf-empty-toolbar">
             <div>
-              <h2 className="brand-title pdf-empty-title">PDF Tools</h2>
-              <p className="brand-subtitle">Split, rotate, and export PDF pages</p>
+              <h2 className="brand-title pdf-empty-title">Alat PDF</h2>
+              <p className="brand-subtitle">Pisah, putar, dan ekspor halaman PDF</p>
             </div>
             <div className="merge-actions">
-              <button className="secondary-button" onClick={() => fileInputRef.current?.click()} disabled={isOpeningPdf}>
+              <button
+                className="secondary-button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isOpeningPdf}
+              >
                 <Upload size={16} />
-                Select PDF Document
+                Pilih Dokumen PDF
               </button>
             </div>
           </div>
 
-          <button type="button" className="dropzone pdf-empty-dropzone" onClick={() => fileInputRef.current?.click()} disabled={isOpeningPdf}>
+          <button
+            type="button"
+            className="dropzone pdf-empty-dropzone"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isOpeningPdf}
+          >
             <FileText size={56} />
-            <span className="field-value">{isOpeningPdf ? 'Opening PDF...' : 'Choose a PDF to start'}</span>
+            <span className="field-value">
+              {isOpeningPdf ? 'Membuka PDF...' : 'Pilih PDF untuk mulai'}
+            </span>
             <span className="muted">
               {isOpeningPdf
-                ? `Opening ${openingFileName} in background. Large PDFs may take time, but the page should stay responsive.`
-                : 'Drop a PDF here or choose one from your device (Max 500MB).'}
+                ? `Membuka ${openingFileName} di latar belakang. PDF besar mungkin perlu waktu, tapi halaman tetap responsif.`
+                : 'Seret PDF ke sini atau pilih dari perangkat Anda (Maks 500MB).'}
             </span>
           </button>
 
           {(status || openingError) && (
             <div className="pdf-empty-status">
-              <StatusBanner status={openingError ? { tone: 'error', title: 'Open failed', detail: openingError } : status} />
+              <StatusBanner
+                status={
+                  openingError
+                    ? { tone: 'error', title: 'Gagal membuka', detail: openingError }
+                    : status
+                }
+              />
             </div>
           )}
         </section>
       )}
 
-      <input ref={fileInputRef} type="file" accept="application/pdf" hidden onChange={handlePdfUpload} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf"
+        hidden
+        onChange={handlePdfUpload}
+      />
 
       {pdfDoc && (
         <>
@@ -1596,11 +2087,11 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                 <div className="field-value">{fileName}</div>
               </div>
               <div>
-                <span className="field-label">Total Pages</span>
+                <span className="field-label">Total Halaman</span>
                 <div className="field-value">{pages.length} Pages</div>
               </div>
               <div>
-                <span className="field-label">Export Format</span>
+                <span className="field-label">Format Ekspor</span>
                 <div className="toggle-button">
                   {['pdf', 'jpg', 'png'].map(format => (
                     <button
@@ -1623,16 +2114,20 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                   }}
                 >
                   <Palette size={16} />
-                  {isGrayscale ? 'B&W ON' : 'COLOR'}
+                  {isGrayscale ? 'B&W ON' : 'WARNA'}
                 </button>
               </div>
               <div>
                 <span className="field-label">Watermark</span>
                 <div className="pdf-watermark-panel">
-                  <div className="pdf-choice-toggle pdf-watermark-toggle" role="radiogroup" aria-label="Watermark status">
+                  <div
+                    className="pdf-choice-toggle pdf-watermark-toggle"
+                    role="radiogroup"
+                    aria-label="Status watermark"
+                  >
                     {[
-                      { value: false, label: 'Off' },
-                      { value: true, label: 'On' }
+                      { value: false, label: 'Mati' },
+                      { value: true, label: 'Nyala' }
                     ].map(option => (
                       <button
                         key={String(option.value)}
@@ -1665,15 +2160,36 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                         ))}
                       </div>
 
+                      <div className="pdf-watermark-grid pdf-watermark-position-grid">
+                        <label className="pdf-watermark-font">
+                          <span>Posisi</span>
+                          <select
+                            className="pdf-watermark-select"
+                            value={watermarkSettings.position}
+                            onChange={event =>
+                              updateWatermarkSettings({ position: event.target.value })
+                            }
+                          >
+                            {WATERMARK_POSITION_OPTIONS.map(option => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+
                       {watermarkSettings.type === 'text' ? (
                         <div className="pdf-watermark-grid">
                           <input
                             className="pdf-watermark-input"
                             type="text"
                             maxLength="80"
-                            placeholder="e.g. CONFIDENTIAL"
+                            placeholder="mis. RAHASIA"
                             value={watermarkSettings.text}
-                            onChange={event => updateWatermarkSettings({ text: event.target.value })}
+                            onChange={event =>
+                              updateWatermarkSettings({ text: event.target.value })
+                            }
                           />
                           <div className="pdf-watermark-inline">
                             <label className="pdf-watermark-font">
@@ -1681,22 +2197,28 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                               <select
                                 className="pdf-watermark-select"
                                 value={watermarkSettings.font}
-                                onChange={event => updateWatermarkSettings({ font: event.target.value })}
+                                onChange={event =>
+                                  updateWatermarkSettings({ font: event.target.value })
+                                }
                               >
                                 {WATERMARK_FONT_OPTIONS.map(option => (
-                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
                                 ))}
                               </select>
                             </label>
                             <label className="pdf-watermark-range">
-                              <span>Size</span>
+                              <span>Ukuran</span>
                               <div className="pdf-watermark-size-control">
                                 <input
                                   type="range"
                                   min="1"
                                   max="36"
                                   value={watermarkSettings.size}
-                                  onChange={event => updateWatermarkSize(event.target.value, 'text')}
+                                  onChange={event =>
+                                    updateWatermarkSize(event.target.value, 'text')
+                                  }
                                 />
                                 <input
                                   type="text"
@@ -1705,32 +2227,34 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                                   max="36"
                                   pattern="[0-9]*"
                                   value={draftWatermarkSize}
-                                  onChange={event => handleWatermarkSizeInputChange(event.target.value, 'text')}
+                                  onChange={event =>
+                                    handleWatermarkSizeInputChange(event.target.value, 'text')
+                                  }
                                   onBlur={() => commitWatermarkSize('text')}
                                   onKeyDown={event => {
                                     if (event.key === 'Enter') {
                                       event.currentTarget.blur();
                                     }
                                   }}
-                                  aria-label="Watermark text size"
+                                  aria-label="Ukuran watermark teks"
                                 />
                               </div>
                             </label>
                             <div className="pdf-watermark-color">
-                              <span>Color</span>
+                              <span>Warna</span>
                               <div className="pdf-watermark-color-control">
                                 <input
                                   type="color"
                                   value={draftWatermarkColor}
                                   onChange={event => setDraftWatermarkColor(event.target.value)}
-                                  aria-label="Choose watermark color"
+                                  aria-label="Pilih warna watermark"
                                 />
                                 <input
                                   type="text"
                                   value={draftWatermarkColor}
                                   maxLength="7"
                                   readOnly
-                                  aria-label="Watermark color hex value"
+                                  aria-label="Nilai hex warna watermark"
                                 />
                                 <button
                                   type="button"
@@ -1754,24 +2278,33 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                             onChange={event => {
                               handleWatermarkImageUpload(event).catch(error => {
                                 console.error(error);
-                                pushToast('Watermark image failed.', error.message || 'Unable to load watermark image.', 'error');
+                                pushToast(
+                                  'Watermark image failed.',
+                                  error.message || 'Unable to load watermark image.',
+                                  'error'
+                                );
                               });
                             }}
                           />
                           <div className="pdf-watermark-inline">
-                            <button className="small-button pdf-watermark-upload" onClick={() => watermarkImageInputRef.current?.click()}>
+                            <button
+                              className="small-button pdf-watermark-upload"
+                              onClick={() => watermarkImageInputRef.current?.click()}
+                            >
                               <Upload size={16} />
-                              {watermarkSettings.imageName ? 'Change Image' : 'Upload Image'}
+                              {watermarkSettings.imageName ? 'Ganti Gambar' : 'Unggah Gambar'}
                             </button>
                             <label className="pdf-watermark-range">
-                              <span>Size</span>
+                              <span>Ukuran</span>
                               <div className="pdf-watermark-size-control">
                                 <input
                                   type="range"
                                   min="1"
                                   max="48"
                                   value={watermarkSettings.size}
-                                  onChange={event => updateWatermarkSize(event.target.value, 'image')}
+                                  onChange={event =>
+                                    updateWatermarkSize(event.target.value, 'image')
+                                  }
                                 />
                                 <input
                                   type="text"
@@ -1780,14 +2313,16 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                                   max="48"
                                   pattern="[0-9]*"
                                   value={draftWatermarkSize}
-                                  onChange={event => handleWatermarkSizeInputChange(event.target.value, 'image')}
+                                  onChange={event =>
+                                    handleWatermarkSizeInputChange(event.target.value, 'image')
+                                  }
                                   onBlur={() => commitWatermarkSize('image')}
                                   onKeyDown={event => {
                                     if (event.key === 'Enter') {
                                       event.currentTarget.blur();
                                     }
                                   }}
-                                  aria-label="Watermark image size"
+                                  aria-label="Ukuran watermark gambar"
                                 />
                               </div>
                             </label>
@@ -1796,15 +2331,18 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                               onClick={clearWatermarkImage}
                               disabled={!watermarkSettings.imageDataUrl}
                             >
-                              Remove
+                              Hapus
                             </button>
                           </div>
                           <div className="pdf-watermark-image-name">
-                            {watermarkSettings.imageName || 'PNG or JPG'}
+                            {watermarkSettings.imageName || 'PNG atau JPG'}
                           </div>
                           {watermarkSettings.imageDataUrl && (
                             <div className="pdf-watermark-preview">
-                              <img src={watermarkSettings.imageDataUrl} alt={watermarkSettings.imageName || 'Watermark image'} />
+                              <img
+                                src={watermarkSettings.imageDataUrl}
+                                alt={watermarkSettings.imageName || 'Watermark image'}
+                              />
                             </div>
                           )}
                         </div>
@@ -1815,7 +2353,13 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
               </div>
             </div>
 
-            <div className={isRangeSplitterEnabled ? 'range-box pdf-range-box expanded' : 'range-box pdf-range-box collapsed'}>
+            <div
+              className={
+                isRangeSplitterEnabled
+                  ? 'range-box pdf-range-box expanded'
+                  : 'range-box pdf-range-box collapsed'
+              }
+            >
               <div className="pdf-range-control-line">
                 <div className="range-header pdf-range-header">
                   <h3 className="field-value pdf-range-title">
@@ -1824,10 +2368,14 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                   </h3>
                 </div>
 
-                <div className="pdf-choice-toggle pdf-range-toggle" role="radiogroup" aria-label="Range splitter status">
+                <div
+                  className="pdf-choice-toggle pdf-range-toggle"
+                  role="radiogroup"
+                  aria-label="Status range splitter"
+                >
                   {[
-                    { value: false, label: 'Off' },
-                    { value: true, label: 'On' }
+                    { value: false, label: 'Mati' },
+                    { value: true, label: 'Nyala' }
                   ].map(option => (
                     <button
                       key={String(option.value)}
@@ -1851,26 +2399,28 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                       {ranges.length > 0 && (
                         <button
                           className="small-button pdf-clear-button"
-                          onClick={() => requestConfirm({
-                            action: 'clear-ranges',
-                            tone: 'warning',
-                            title: 'Clear Ranges',
-                            message: 'All configured ranges will be removed.',
-                            confirmLabel: 'Clear'
-                          })}
+                          onClick={() =>
+                            requestConfirm({
+                              action: 'clear-ranges',
+                              tone: 'warning',
+                              title: 'Hapus Rentang',
+                              message: 'All configured ranges will be removed.',
+                              confirmLabel: 'Clear'
+                            })
+                          }
                         >
-                          Clear All
+                          Hapus Semua
                         </button>
                       )}
                       <button className="small-button pdf-add-range-button" onClick={addRange}>
-                        Add Range
+                        Tambah Rentang
                       </button>
                     </div>
                   </div>
 
                   <div className="range-list">
                     {ranges.length === 0 ? (
-                      <div className="muted">No ranges added.</div>
+                      <div className="muted">Belum ada rentang ditambahkan.</div>
                     ) : (
                       ranges.map((range, index) => {
                         const safeStart = Math.min(range.start, range.end);
@@ -1881,16 +2431,35 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                           <div className="range-row pdf-range-row" key={range.id}>
                             <div className="range-index pdf-range-index">#{index + 1}</div>
                             <div className="range-input-wrap">
-                              <span>Start</span>
-                              <input className="range-input pdf-range-input" type="number" min="1" max={pages.length} value={range.start} onChange={event => updateRange(range.id, 'start', event.target.value)} />
+                              <span>Mulai</span>
+                              <input
+                                className="range-input pdf-range-input"
+                                type="number"
+                                min="1"
+                                max={pages.length}
+                                value={range.start}
+                                onChange={event =>
+                                  updateRange(range.id, 'start', event.target.value)
+                                }
+                              />
                             </div>
                             <div className="muted">-</div>
                             <div className="range-input-wrap">
-                              <span>End</span>
-                              <input className="range-input pdf-range-input" type="number" min="1" max={pages.length} value={range.end} onChange={event => updateRange(range.id, 'end', event.target.value)} />
+                              <span>Akhir</span>
+                              <input
+                                className="range-input pdf-range-input"
+                                type="number"
+                                min="1"
+                                max={pages.length}
+                                value={range.end}
+                                onChange={event => updateRange(range.id, 'end', event.target.value)}
+                              />
                             </div>
                             <div className="range-summary">{count} pages</div>
-                            <button className="icon-button pdf-remove-range-button" onClick={() => removeRange(range.id)}>
+                            <button
+                              className="icon-button pdf-remove-range-button"
+                              onClick={() => removeRange(range.id)}
+                            >
                               <Trash2 size={16} />
                             </button>
                           </div>
@@ -1901,15 +2470,23 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
 
                   <div className="toolbar pdf-range-toolbar">
                     <div className="range-actions">
-                      <button className="danger-button pdf-delete-range-button" onClick={deletePagesInRange} disabled={ranges.length === 0}>
+                      <button
+                        className="danger-button pdf-delete-range-button"
+                        onClick={deletePagesInRange}
+                        disabled={ranges.length === 0}
+                      >
                         <Trash2 size={16} />
-                        Delete Range Pages
+                        Hapus Halaman Rentang
                       </button>
                     </div>
                     <div className="range-actions">
-                      <button className="ghost-button pdf-split-button" onClick={downloadRangesAsZip} disabled={ranges.length === 0}>
+                      <button
+                        className="ghost-button pdf-split-button"
+                        onClick={downloadRangesAsZip}
+                        disabled={ranges.length === 0}
+                      >
                         <Archive size={16} />
-                        Split & Download ZIP
+                        Split & Unduh ZIP
                       </button>
                     </div>
                   </div>
@@ -1927,19 +2504,30 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                   }}
                 >
                   <CheckSquare size={16} />
-                  {allSelected ? 'Deselect' : 'Select All'}
+                  {allSelected ? 'Batal Pilih' : 'Pilih Semua'}
                 </button>
                 {selectedPages.length > 0 ? (
                   <>
-                    <button className="ghost-button pdf-rotate-selected-button" onClick={rotateSelectedPages}>
+                    <button
+                      className="ghost-button pdf-rotate-selected-button"
+                      onClick={rotateSelectedPages}
+                    >
                       <RotateCw size={16} />
-                      Rotate ({selectedPages.length})
+                      Putar ({selectedPages.length})
                     </button>
-                    <button className="danger-button pdf-delete-button" onClick={deleteSelectedPages}>
+                    <button
+                      className="danger-button pdf-delete-button"
+                      onClick={deleteSelectedPages}
+                    >
                       <Trash2 size={16} />
-                      Delete ({selectedPages.length})
+                      Hapus ({selectedPages.length})
                     </button>
-                    <button className="ghost-button pdf-zip-button" onClick={() => downloadZip(selectedPages, `${getOutputBaseName()}_Selected.zip`)}>
+                    <button
+                      className="ghost-button pdf-zip-button"
+                      onClick={() =>
+                        downloadZip(selectedPages, `${getOutputBaseName()}_Selected.zip`)
+                      }
+                    >
                       <Archive size={16} />
                       Zip ({selectedPages.length})
                     </button>
@@ -1949,23 +2537,33 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                     </button>
                   </>
                 ) : (
-                  <button className="secondary-button pdf-saveall-button" onClick={() => downloadZip(pages.map(page => page.index), `${getOutputBaseName()}_Full.zip`)}>
+                  <button
+                    className="secondary-button pdf-saveall-button"
+                    onClick={() =>
+                      downloadZip(
+                        pages.map(page => page.index),
+                        `${getOutputBaseName()}_Full.zip`
+                      )
+                    }
+                  >
                     <Archive size={16} />
-                    Save All as {exportFormat.toUpperCase()}
+                    Simpan Semua sebagai {exportFormat.toUpperCase()}
                   </button>
                 )}
               </div>
               <button
                 className="small-button pdf-close-button"
-                onClick={() => requestConfirm({
-                  action: 'reset-file',
-                  tone: 'warning',
-                  title: 'Close Document',
-                  message: 'The active PDF session will be closed from the workspace.',
-                  confirmLabel: 'Close'
-                })}
+                onClick={() =>
+                  requestConfirm({
+                    action: 'reset-file',
+                    tone: 'warning',
+                    title: 'Tutup Dokumen',
+                    message: 'The active PDF session will be closed from the workspace.',
+                    confirmLabel: 'Tutup'
+                  })
+                }
               >
-                Close File
+                Tutup File
               </button>
             </div>
 
@@ -1986,39 +2584,53 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
               {visiblePages.map((page, localIndex) => {
                 const visualIndex = visiblePageStartIndex + localIndex;
                 return (
-                <PageCard
-                  key={page.index}
-                  page={page}
-                  visualIndex={visualIndex}
-                  selected={selectedPages.includes(page.index)}
-                  isGrayscale={isGrayscale}
-                  exportFormat={exportFormat}
-                  watermarkSignature={watermarkSignature}
-                  isDragging={draggedPageIndex === page.index}
-                  isDropTarget={dropTargetPageIndex === page.index && draggedPageIndex !== page.index}
-                  onToggleSelection={togglePageSelection}
-                  onRotate={pageIndex => {
-                    setPages(prev => prev.map(item => (
-                      item.index === pageIndex
-                        ? {
-                            ...item,
-                            rotationOffset: (item.rotationOffset ?? 0) + 90
-                          }
-                        : item
-                    )));
-                    const targetPage = pages.find(item => item.index === pageIndex);
-                    const nextRotation = normalizeRotation((targetPage?.originalRotation ?? 0) + (targetPage?.rotationOffset ?? 0) + 90);
-                    setStatus({ tone: 'info', title: 'Page rotation updated', detail: `Page ${visualIndex + 1} is now set to ${nextRotation}deg.` });
-                  }}
-                  onPreview={openPagePreview}
-                  onCardRef={setPageCardRef}
-                  onDownload={pageData => downloadItem(pageData, true)}
-                  onEnsurePreview={ensurePreview}
-                  onDragStart={handlePageDragStart}
-                  onDragOver={handlePageDragOver}
-                  onDrop={handlePageDrop}
-                  onDragEnd={handlePageDragEnd}
-                />
+                  <PageCard
+                    key={page.index}
+                    page={page}
+                    visualIndex={visualIndex}
+                    selected={selectedPages.includes(page.index)}
+                    isGrayscale={isGrayscale}
+                    exportFormat={exportFormat}
+                    watermarkSignature={watermarkSignature}
+                    isDragging={draggedPageIndex === page.index}
+                    isDropTarget={
+                      dropTargetPageIndex === page.index && draggedPageIndex !== page.index
+                    }
+                    onToggleSelection={togglePageSelection}
+                    onRotate={pageIndex => {
+                      setPages(prev =>
+                        prev.map(item =>
+                          item.index === pageIndex
+                            ? {
+                                ...item,
+                                rotationOffset: (item.rotationOffset ?? 0) + 90
+                              }
+                            : item
+                        )
+                      );
+                      const targetPage = pages.find(item => item.index === pageIndex);
+                      const nextRotation = normalizeRotation(
+                        (targetPage?.originalRotation ?? 0) + (targetPage?.rotationOffset ?? 0) + 90
+                      );
+                      setStatus({
+                        tone: 'info',
+                        title: 'Rotasi halaman diperbarui',
+                        detail: `Halaman ${visualIndex + 1} kini diatur ke ${nextRotation}deg.`
+                      });
+                    }}
+                    onPreview={openPagePreview}
+                    onCardRef={setPageCardRef}
+                    onDownload={pageData => downloadItem(pageData, true)}
+                    onEnsurePreview={ensurePreview}
+                    onDragStart={handlePageDragStart}
+                    onDragOver={handlePageDragOver}
+                    onDrop={handlePageDrop}
+                    onDragEnd={handlePageDragEnd}
+                    canMoveBackward={visualIndex > 0}
+                    canMoveForward={visualIndex < pages.length - 1}
+                    onMoveBackward={() => movePageByOffset(page.index, -1)}
+                    onMoveForward={() => movePageByOffset(page.index, 1)}
+                  />
                 );
               })}
             </section>
@@ -2045,11 +2657,27 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         canGoPrev={previewPageIndex !== null && previewPageIndex > 0}
         canGoNext={previewPageIndex !== null && previewPageIndex < pages.length - 1}
         onClose={closePagePreview}
-        onPrev={() => setPreviewPageIndex(currentIndex => (currentIndex !== null && currentIndex > 0 ? currentIndex - 1 : currentIndex))}
-        onNext={() => setPreviewPageIndex(currentIndex => (currentIndex !== null && currentIndex < pages.length - 1 ? currentIndex + 1 : currentIndex))}
+        onPrev={() =>
+          setPreviewPageIndex(currentIndex =>
+            currentIndex !== null && currentIndex > 0 ? currentIndex - 1 : currentIndex
+          )
+        }
+        onNext={() =>
+          setPreviewPageIndex(currentIndex =>
+            currentIndex !== null && currentIndex < pages.length - 1
+              ? currentIndex + 1
+              : currentIndex
+          )
+        }
       />
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
-      {isProcessing && <ProcessingOverlay loadingProgress={loadingProgress} label={processingState.label} detail={processingState.detail} />}
+      {isProcessing && (
+        <ProcessingOverlay
+          loadingProgress={loadingProgress}
+          label={processingState.label}
+          detail={processingState.detail}
+        />
+      )}
     </div>
   );
 }

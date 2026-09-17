@@ -1,13 +1,18 @@
-let activeDragPreview = null;
+let activeDragPreview: HTMLElement | null = null;
 
-function cleanupDragPreview() {
+function cleanupDragPreview(): void {
   if (activeDragPreview?.parentNode) {
     activeDragPreview.parentNode.removeChild(activeDragPreview);
   }
   activeDragPreview = null;
 }
 
-export function useCardDragImage(event) {
+export interface CardDragEvent {
+  dataTransfer?: DataTransfer | null;
+  currentTarget?: EventTarget | null;
+}
+
+export function applyCardDragImage(event: CardDragEvent): void {
   if (!event.dataTransfer?.setDragImage) return;
 
   cleanupDragPreview();
@@ -18,7 +23,7 @@ export function useCardDragImage(event) {
   const rect = source.getBoundingClientRect();
   const previewWidth = Math.min(rect.width, 220);
   const previewHeight = Math.min(rect.height, 176);
-  const clone = source.cloneNode(true);
+  const clone = source.cloneNode(true) as HTMLElement;
   clone.classList.add('drag-preview-clone');
   clone.classList.remove('dragging', 'drop-target-before', 'drop-target-after');
   clone.setAttribute('aria-hidden', 'true');

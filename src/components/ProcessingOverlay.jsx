@@ -1,7 +1,7 @@
 export default function ProcessingOverlay({
   progress,
   loadingProgress,
-  label = 'Processing...',
+  label = 'Memproses...',
   detail
 }) {
   const activeProgress = progress ?? loadingProgress ?? { current: 0, total: 0 };

@@ -1,17 +1,35 @@
 import { canvasToArrayBuffer, clearCanvas } from './canvas';
 
-export async function readImageMetrics(file) {
+export interface ImageMetrics {
+  width: number;
+  height: number;
+}
+
+export interface ProcessedImage {
+  bytes: ArrayBuffer;
+  mimeType: string;
+  pixelWidth: number;
+  pixelHeight: number;
+}
+
+export interface PreprocessImageOptions {
+  maxLongEdge?: number;
+  quality?: number;
+  grayscale?: boolean;
+}
+
+export async function readImageMetrics(file: Blob): Promise<ImageMetrics> {
   const imageBitmap = await createImageBitmap(file);
   const metrics = { width: imageBitmap.width, height: imageBitmap.height };
   imageBitmap.close();
   return metrics;
 }
 
-export async function preprocessImageForPdf(file, rotation = 0, {
-  maxLongEdge = 2400,
-  quality = 0.9,
-  grayscale = false
-} = {}) {
+export async function preprocessImageForPdf(
+  file: Blob,
+  rotation = 0,
+  { maxLongEdge = 2400, quality = 0.9, grayscale = false }: PreprocessImageOptions = {}
+): Promise<ProcessedImage> {
   const imageBitmap = await createImageBitmap(file);
   const canvas = document.createElement('canvas');
 

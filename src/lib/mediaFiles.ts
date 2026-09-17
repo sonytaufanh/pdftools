@@ -1,24 +1,24 @@
-export function isHeicFile(file) {
+export function isHeicFile(file: File): boolean {
   const name = file.name.toLowerCase();
-  return file.type === 'image/heic' ||
-    name.endsWith('.heic');
+  return file.type === 'image/heic' || name.endsWith('.heic');
 }
 
-export function isSupportedRasterFile(file) {
+export function isSupportedRasterFile(file: File): boolean {
   const name = file.name.toLowerCase();
-  return ['image/png', 'image/jpeg', 'image/jpg'].includes(file.type) ||
-    /\.(png|jpe?g)$/i.test(name);
+  return (
+    ['image/png', 'image/jpeg', 'image/jpg'].includes(file.type) || /\.(png|jpe?g)$/i.test(name)
+  );
 }
 
-export function isSupportedImageLikeFile(file) {
+export function isSupportedImageLikeFile(file: File): boolean {
   return isSupportedRasterFile(file) || isHeicFile(file);
 }
 
-function blobToFile(blob, fileName, type) {
+function blobToFile(blob: Blob, fileName: string, type: string): File {
   return new File([blob], fileName, { type, lastModified: Date.now() });
 }
 
-export async function normalizeMediaFile(file) {
+export async function normalizeMediaFile(file: File): Promise<File> {
   if (isHeicFile(file)) {
     const { default: heic2any } = await import('heic2any');
     const converted = await heic2any({
