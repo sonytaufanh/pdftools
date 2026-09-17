@@ -100,6 +100,29 @@ test('PDF Tools loads a PDF and lists its pages', async ({ page }, testInfo) => 
   await expect(page.locator('.page-badge').first()).toHaveText('#1');
 });
 
+test('orientation badge does not overlap the move controls', async ({ page }, testInfo) => {
+  const pdfPath = await createPdfFixture(testInfo, 2);
+
+  await page.goto('/');
+  await page.setInputFiles('input[type="file"][accept="application/pdf"]', pdfPath);
+
+  const card = page.locator('.page-card').first();
+  await expect(card).toBeVisible({ timeout: 30_000 });
+
+  const badge = await card.locator('.orientation-badge').boundingBox();
+  const controls = await card.locator('.page-move-controls').boundingBox();
+  expect(badge).toBeTruthy();
+  expect(controls).toBeTruthy();
+
+  const overlaps = !(
+    badge.x + badge.width <= controls.x ||
+    controls.x + controls.width <= badge.x ||
+    badge.y + badge.height <= controls.y ||
+    controls.y + controls.height <= badge.y
+  );
+  expect(overlaps).toBe(false);
+});
+
 test('Compress PDF reads a document and estimates output', async ({ page }, testInfo) => {
   const pdfPath = await createPdfFixture(testInfo, 2);
 

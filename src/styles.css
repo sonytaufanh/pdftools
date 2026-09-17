@@ -2855,6 +2855,7 @@ a {
 
 .orientation-badge {
   right: 16px;
+  bottom: 56px;
 }
 
 .pdf-tools-view .page-footer,
@@ -3667,11 +3668,11 @@ a {
 
 .page-move-controls {
   position: absolute;
-  right: 8px;
-  bottom: 8px;
+  right: 16px;
+  bottom: 16px;
   display: flex;
   gap: 4px;
-  z-index: 4;
+  z-index: 5;
 }
 
 .page-move-button {
