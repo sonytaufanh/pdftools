@@ -67,6 +67,27 @@ test('hamburger button hides and shows the sidebar', async ({ page }) => {
   await expect(page.locator('#app-sidebar')).toBeVisible();
 });
 
+test('content area scrolls when content is taller than the viewport', async ({ page }) => {
+  await page.goto('/#/guide');
+
+  const contentArea = page.locator('.content-area');
+  const isScrollable = await contentArea.evaluate(node => node.scrollHeight > node.clientHeight);
+
+  if (isScrollable) {
+    await contentArea.evaluate(node => {
+      node.scrollTop = node.scrollHeight;
+    });
+    const scrolled = await contentArea.evaluate(node => node.scrollTop > 0);
+    expect(scrolled).toBe(true);
+  } else {
+    // Konten pendek: pastikan setidaknya window yang tidak discroll (bukan terpotong)
+    const windowNotScrollable = await page.evaluate(
+      () => document.documentElement.scrollHeight <= window.innerHeight
+    );
+    expect(windowNotScrollable).toBe(true);
+  }
+});
+
 test('PDF Tools loads a PDF and lists its pages', async ({ page }, testInfo) => {
   const pdfPath = await createPdfFixture(testInfo, 2);
 
