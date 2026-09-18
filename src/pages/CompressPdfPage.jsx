@@ -4,6 +4,7 @@ import { Archive, Download, FileText, SlidersHorizontal, Upload, X } from 'lucid
 import ProcessingOverlay from '../components/ProcessingOverlay';
 import StatusBanner from '../components/StatusBanner';
 import { canvasToArrayBuffer, clearCanvas } from '../lib/canvas';
+import { buildTargetSizeOptions } from '../lib/compressTargets';
 import { formatBytes, getPdfBaseName } from '../lib/formatters';
 import { destroyPdfProxy, getPdfJsLib } from '../lib/pdfjs';
 import { readPdfPreview } from '../lib/pdfPreview';
@@ -39,13 +40,6 @@ const FALLBACK_ESTIMATE_RATIOS = {
   balanced: 0.68,
   small: 0.48
 };
-
-const TARGET_SIZE_OPTIONS = [
-  { value: 0.5, label: '500 KB' },
-  { value: 1, label: '1 MB' },
-  { value: 2, label: '2 MB' },
-  { value: 5, label: '5 MB' }
-];
 
 const MIN_SAVINGS_BYTES = 1024;
 
@@ -182,7 +176,7 @@ export default function CompressPdfPage() {
   const [result, setResult] = useState(null);
   const [presetEstimates, setPresetEstimates] = useState({ status: 'idle', values: {} });
   const [presetActualSizes, setPresetActualSizes] = useState({});
-  const [targetSizeMb, setTargetSizeMb] = useState(null);
+  const [targetSizeBytes, setTargetSizeBytes] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [isFileDropActive, setIsFileDropActive] = useState(false);
@@ -207,20 +201,23 @@ export default function CompressPdfPage() {
   const canCompressSelectedPreset = Boolean(
     pdfFile && presetEstimates.status === 'ready' && availablePresetIds.includes(selectedPreset.id)
   );
+  const targetSizeOptions = useMemo(
+    () => (pdfFile ? buildTargetSizeOptions(pdfFile.size) : []),
+    [pdfFile]
+  );
 
-  function applyTargetSize(sizeMb) {
-    const nextTarget = targetSizeMb === sizeMb ? null : sizeMb;
-    setTargetSizeMb(nextTarget);
+  function applyTargetSize(targetBytes) {
+    const nextTarget = targetSizeBytes === targetBytes ? null : targetBytes;
+    setTargetSizeBytes(nextTarget);
 
     if (nextTarget === null || presetEstimates.status !== 'ready') return;
 
-    const targetBytes = nextTarget * 1024 * 1024;
-    const nextPresetId = findPresetIdForTarget(presetSizeValues, targetBytes);
+    const nextPresetId = findPresetIdForTarget(presetSizeValues, nextTarget);
     if (!nextPresetId) return;
 
     setSelectedPresetId(nextPresetId);
     const estimatedSize = presetSizeValues[nextPresetId];
-    const reachable = Number.isFinite(estimatedSize) && estimatedSize <= targetBytes;
+    const reachable = Number.isFinite(estimatedSize) && estimatedSize <= nextTarget;
     setStatus({
       tone: reachable ? 'info' : 'error',
       title: reachable ? 'Preset sesuai target' : 'Target mungkin tidak tercapai',
@@ -253,7 +250,7 @@ export default function CompressPdfPage() {
     setPresetEstimates({ status: 'loading', values: {} });
     setPresetActualSizes({});
     setSelectedPresetId(COMPRESSION_PRESETS[0].id);
-    setTargetSizeMb(null);
+    setTargetSizeBytes(null);
 
     try {
       const preview = await readPdfPreview(file, { scale: 0.46, quality: 0.82 });
@@ -320,7 +317,7 @@ export default function CompressPdfPage() {
     setPdfFile(null);
     setResult(null);
     setStatus(null);
-    setTargetSizeMb(null);
+    setTargetSizeBytes(null);
     setPresetEstimates({ status: 'idle', values: {} });
     setPresetActualSizes({});
   }
@@ -613,26 +610,26 @@ export default function CompressPdfPage() {
               <div className="compress-target-field">
                 <span className="field-label">Target ukuran (opsional)</span>
                 <div className="compress-target-options" role="group" aria-label="Target ukuran">
-                  {TARGET_SIZE_OPTIONS.map(option => (
+                  {targetSizeOptions.map(option => (
                     <button
-                      key={option.value}
+                      key={option.bytes}
                       type="button"
                       className={
-                        targetSizeMb === option.value
+                        targetSizeBytes === option.bytes
                           ? 'compress-target-button active'
                           : 'compress-target-button'
                       }
-                      aria-pressed={targetSizeMb === option.value}
+                      aria-pressed={targetSizeBytes === option.bytes}
                       disabled={presetEstimates.status !== 'ready'}
-                      onClick={() => applyTargetSize(option.value)}
+                      onClick={() => applyTargetSize(option.bytes)}
                     >
                       {option.label}
                     </button>
                   ))}
                 </div>
                 <span className="converter-field-hint">
-                  Pilih target, lalu preset terbaik di bawah ukuran itu dipakai otomatis. Klik lagi
-                  untuk membatalkan.
+                  Target selalu di bawah ukuran asli. Klik satu untuk memakai preset terbaik di
+                  bawahnya, klik lagi untuk membatalkan.
                 </span>
               </div>
 
@@ -666,7 +663,7 @@ export default function CompressPdfPage() {
                         .join(' ')}
                       onClick={() => {
                         setSelectedPresetId(preset.id);
-                        setTargetSizeMb(null);
+                        setTargetSizeBytes(null);
                       }}
                     >
                       <span className="compress-preset-title">
