@@ -3836,3 +3836,35 @@ a {
   color: var(--color-text-soft);
   font-size: 0.88rem;
 }
+
+.compress-target-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compress-target-button {
+  padding: 8px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text-soft);
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.compress-target-button:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.compress-target-button.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #ffffff;
+}
+
+.compress-target-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

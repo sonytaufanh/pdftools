@@ -31,7 +31,7 @@ const GUIDE_SECTIONS = [
     steps: [
       'Pilih PDF untuk dimuat dan dipratinjau.',
       'Pilih preset kompresi (Kualitas Terbaik, Seimbang, Kecil).',
-      'Opsional, masukkan target ukuran dalam MB untuk memilih preset otomatis.',
+      'Opsional, pilih target ukuran (500 KB, 1 MB, 2 MB, 5 MB) agar preset otomatis dipilih.',
       'Klik "Kompres & Unduh" dan simpan hasilnya.'
     ]
   },

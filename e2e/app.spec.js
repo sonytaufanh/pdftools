@@ -131,6 +131,13 @@ test('Compress PDF reads a document and estimates output', async ({ page }, test
 
   await expect(page.locator('.compress-file-card')).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('.compress-file-name')).toContainText('sample.pdf');
+
+  const targetButton = page.getByRole('button', { name: '2 MB' });
+  await expect(targetButton).toBeEnabled({ timeout: 30_000 });
+  await targetButton.click();
+  await expect(targetButton).toHaveAttribute('aria-pressed', 'true');
+  await targetButton.click();
+  await expect(targetButton).toHaveAttribute('aria-pressed', 'false');
 });
 
 test('Image to PDF adds an image card', async ({ page }, testInfo) => {

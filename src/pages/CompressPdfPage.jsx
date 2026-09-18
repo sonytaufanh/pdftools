@@ -40,6 +40,13 @@ const FALLBACK_ESTIMATE_RATIOS = {
   small: 0.48
 };
 
+const TARGET_SIZE_OPTIONS = [
+  { value: 0.5, label: '500 KB' },
+  { value: 1, label: '1 MB' },
+  { value: 2, label: '2 MB' },
+  { value: 5, label: '5 MB' }
+];
+
 const MIN_SAVINGS_BYTES = 1024;
 
 function getEstimatePageNumbers(pageCount) {
@@ -175,7 +182,7 @@ export default function CompressPdfPage() {
   const [result, setResult] = useState(null);
   const [presetEstimates, setPresetEstimates] = useState({ status: 'idle', values: {} });
   const [presetActualSizes, setPresetActualSizes] = useState({});
-  const [targetSizeMb, setTargetSizeMb] = useState('');
+  const [targetSizeMb, setTargetSizeMb] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [isFileDropActive, setIsFileDropActive] = useState(false);
@@ -201,14 +208,13 @@ export default function CompressPdfPage() {
     pdfFile && presetEstimates.status === 'ready' && availablePresetIds.includes(selectedPreset.id)
   );
 
-  function applyTargetSize(value) {
-    setTargetSizeMb(value);
+  function applyTargetSize(sizeMb) {
+    const nextTarget = targetSizeMb === sizeMb ? null : sizeMb;
+    setTargetSizeMb(nextTarget);
 
-    const numericValue = Number(value);
-    if (!value.trim() || !Number.isFinite(numericValue) || numericValue <= 0) return;
-    if (presetEstimates.status !== 'ready') return;
+    if (nextTarget === null || presetEstimates.status !== 'ready') return;
 
-    const targetBytes = numericValue * 1024 * 1024;
+    const targetBytes = nextTarget * 1024 * 1024;
     const nextPresetId = findPresetIdForTarget(presetSizeValues, targetBytes);
     if (!nextPresetId) return;
 
@@ -247,7 +253,7 @@ export default function CompressPdfPage() {
     setPresetEstimates({ status: 'loading', values: {} });
     setPresetActualSizes({});
     setSelectedPresetId(COMPRESSION_PRESETS[0].id);
-    setTargetSizeMb('');
+    setTargetSizeMb(null);
 
     try {
       const preview = await readPdfPreview(file, { scale: 0.46, quality: 0.82 });
@@ -314,7 +320,7 @@ export default function CompressPdfPage() {
     setPdfFile(null);
     setResult(null);
     setStatus(null);
-    setTargetSizeMb('');
+    setTargetSizeMb(null);
     setPresetEstimates({ status: 'idle', values: {} });
     setPresetActualSizes({});
   }
@@ -605,21 +611,28 @@ export default function CompressPdfPage() {
               </div>
 
               <div className="compress-target-field">
-                <label className="field-label" htmlFor="compress-target-size">
-                  Target ukuran (MB, opsional)
-                </label>
-                <input
-                  id="compress-target-size"
-                  className="converter-input"
-                  type="number"
-                  min="0.1"
-                  step="0.1"
-                  placeholder="mis. 2"
-                  value={targetSizeMb}
-                  onChange={event => applyTargetSize(event.target.value)}
-                />
+                <span className="field-label">Target ukuran (opsional)</span>
+                <div className="compress-target-options" role="group" aria-label="Target ukuran">
+                  {TARGET_SIZE_OPTIONS.map(option => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={
+                        targetSizeMb === option.value
+                          ? 'compress-target-button active'
+                          : 'compress-target-button'
+                      }
+                      aria-pressed={targetSizeMb === option.value}
+                      disabled={presetEstimates.status !== 'ready'}
+                      onClick={() => applyTargetSize(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
                 <span className="converter-field-hint">
-                  Memilih preset terbaik yang diperkirakan di bawah ukuran ini.
+                  Pilih target, lalu preset terbaik di bawah ukuran itu dipakai otomatis. Klik lagi
+                  untuk membatalkan.
                 </span>
               </div>
 
@@ -651,7 +664,10 @@ export default function CompressPdfPage() {
                       ]
                         .filter(Boolean)
                         .join(' ')}
-                      onClick={() => setSelectedPresetId(preset.id)}
+                      onClick={() => {
+                        setSelectedPresetId(preset.id);
+                        setTargetSizeMb(null);
+                      }}
                     >
                       <span className="compress-preset-title">
                         <span>{preset.label}</span>
