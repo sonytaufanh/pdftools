@@ -1,7 +1,7 @@
 {
-  "name": "PDFTools",
-  "short_name": "PDFTools",
-  "description": "Browser-based PDF and image tools that run entirely on your device.",
+  "name": "Modernland PDF Tools",
+  "short_name": "Modernland",
+  "description": "Alat PDF dan gambar yang berjalan sepenuhnya di perangkat Anda.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

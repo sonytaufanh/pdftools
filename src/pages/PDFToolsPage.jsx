@@ -23,6 +23,12 @@ import { useFlipListAnimation } from '../lib/useFlipListAnimation';
 import { applyCardDragImage } from '../lib/dragImage';
 import { getDroppedFiles, hasDraggedFiles } from '../lib/dropFiles';
 import {
+  getPdfWatermarkTextAngle,
+  getWatermarkAnchor,
+  getWatermarkTextAngle,
+  rotatePoint
+} from '../lib/watermark';
+import {
   AlertTriangle,
   Archive,
   Check,
@@ -116,34 +122,6 @@ function getWatermarkSignature(settings) {
   return settings.type === 'image'
     ? `image|${settings.size}|${settings.position}|${settings.imageName}|${settings.imageDataUrl.slice(0, 64)}|${settings.imageDataUrl.length}`
     : `text|${settings.text.trim()}|${settings.font}|${settings.size}|${settings.color}|${settings.position}`;
-}
-
-function getWatermarkAnchor(width, height, position = 'center') {
-  const insetX = width * 0.16;
-  const insetY = height * 0.16;
-  const [vertical, horizontal] = position === 'center' ? ['middle', 'center'] : position.split('-');
-
-  const x = horizontal === 'left' ? insetX : horizontal === 'right' ? width - insetX : width / 2;
-  const y = vertical === 'top' ? height - insetY : vertical === 'bottom' ? insetY : height / 2;
-
-  return { x, y };
-}
-
-function rotatePoint(x, y, degreesValue) {
-  const radians = degreesValue * (Math.PI / 180);
-  return {
-    x: x * Math.cos(radians) - y * Math.sin(radians),
-    y: x * Math.sin(radians) + y * Math.cos(radians)
-  };
-}
-
-function getWatermarkTextAngle(width, height) {
-  return width > height ? 0 : -45;
-}
-
-function getPdfWatermarkTextAngle(width, height) {
-  const canvasAngle = getWatermarkTextAngle(width, height);
-  return canvasAngle === 0 ? 0 : Math.abs(canvasAngle);
 }
 
 function getWatermarkSizeLimits(type) {
@@ -881,9 +859,11 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       const drawWidth = image.width * scale;
       const drawHeight = image.height * scale;
       const anchor = getWatermarkAnchor(width, height, watermark.position);
+      // Konversi y dari koordinat layar (atas) ke koordinat PDF (bawah).
+      const anchorY = height - anchor.y;
       page.drawImage(image, {
         x: anchor.x - drawWidth / 2,
-        y: anchor.y - drawHeight / 2,
+        y: anchorY - drawHeight / 2,
         width: drawWidth,
         height: drawHeight,
         opacity: 0.28
@@ -899,12 +879,13 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     const fontSize = Math.max(8, Math.round(Math.min(width, height) * sizeRatio));
     const textWidth = font.widthOfTextAtSize(normalizedText, fontSize);
     const anchor = getWatermarkAnchor(width, height, watermark.position);
+    const anchorY = height - anchor.y;
     const watermarkAngle = getPdfWatermarkTextAngle(width, height);
     const centerOffset = rotatePoint(textWidth / 2, fontSize / 2, watermarkAngle);
 
     page.drawText(normalizedText, {
       x: anchor.x - centerOffset.x,
-      y: anchor.y - centerOffset.y,
+      y: anchorY - centerOffset.y,
       font,
       size: fontSize,
       rotate: degrees(watermarkAngle),
