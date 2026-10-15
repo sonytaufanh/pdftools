@@ -389,13 +389,7 @@ export default function PagePreviewModal({
         </div>
         <div className="page-preview-modal-body">
           <div
-            className={[
-              'page-preview-modal-canvas',
-              zoomFactor > DEFAULT_PREVIEW_FACTOR ? 'is-draggable' : '',
-              isDragging ? 'is-dragging' : ''
-            ]
-              .filter(Boolean)
-              .join(' ')}
+            className="page-preview-modal-canvas"
             ref={canvasRef}
             onMouseDown={event => {
               if (zoomFactor <= DEFAULT_PREVIEW_FACTOR) return;
@@ -415,45 +409,18 @@ export default function PagePreviewModal({
                 <span>Merender pratinjau halaman...</span>
               </div>
             ) : imageUrl ? (
-              <div
-                className="page-preview-stage"
+              <img
+                ref={imgRef}
+                src={imageUrl}
+                alt={pageLabel}
+                draggable={false}
+                onLoad={fitToView}
+                className="page-preview-image"
                 style={{
-                  width: `${stageWidth}px`,
-                  height: `${stageHeight}px`
+                  transform: `scale(${zoomFactor})`,
+                  transformOrigin: 'center center'
                 }}
-              >
-                <div
-                  className="page-preview-page"
-                  style={{
-                    left: `${paperPosition.left}px`,
-                    top: `${paperPosition.top}px`,
-                    width: `${paperFrameSize.width}px`,
-                    height: `${paperFrameSize.height}px`
-                  }}
-                >
-                  <div
-                    className="page-preview-asset"
-                    style={{
-                      width: `${assetFrameSize.width}px`,
-                      height: `${assetFrameSize.height}px`,
-                      transform: `rotate(${normalizedRotation}deg)`
-                    }}
-                  >
-                    <img
-                      ref={imgRef}
-                      src={imageUrl}
-                      alt={pageLabel}
-                      draggable={false}
-                      onLoad={fitToView}
-                      style={{
-                        maxWidth: '100%',
-                        maxHeight: '100%',
-                        objectFit: 'contain'
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
+              />
             ) : (
               <div className="page-preview-modal-placeholder">
                 <span>Pratinjau tidak tersedia untuk halaman ini.</span>
