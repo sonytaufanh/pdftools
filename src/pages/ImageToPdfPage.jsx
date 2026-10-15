@@ -32,16 +32,6 @@ const PAGE_TEMPLATES = [
     value: 'a4-landscape',
     label: 'A4 Lanskap',
     description: 'Semua halaman lanskap A4.'
-  },
-  {
-    value: 'letter-auto',
-    label: 'Letter Otomatis',
-    description: 'US Letter, orientasi mengikuti tiap gambar.'
-  },
-  {
-    value: 'legal-auto',
-    label: 'Legal Otomatis',
-    description: 'US Legal, orientasi mengikuti tiap gambar.'
   }
 ];
 
@@ -49,24 +39,12 @@ const PAGE_SIZES = {
   a4: {
     portrait: { width: 595.28, height: 841.89 },
     landscape: { width: 841.89, height: 595.28 }
-  },
-  letter: {
-    portrait: { width: 612, height: 792 },
-    landscape: { width: 792, height: 612 }
-  },
-  legal: {
-    portrait: { width: 612, height: 1008 },
-    landscape: { width: 1008, height: 612 }
   }
 };
 
 const PAGE_MARGIN = 36;
 
-const QUALITY_OPTIONS = [
-  { value: 0.7, label: 'File lebih kecil' },
-  { value: 0.85, label: 'Seimbang' },
-  { value: 0.95, label: 'Kualitas terbaik' }
-];
+const DEFAULT_IMAGE_QUALITY = 0.95;
 
 const GRID_PAGE_SIZE_OPTIONS = [20, 30, 50, 100];
 
@@ -89,7 +67,6 @@ export default function ImageToPdfPage() {
   const previousUrlsRef = useRef([]);
   const [images, setImages] = useState([]);
   const [pageTemplate, setPageTemplate] = useState('a4-auto');
-  const [imageQuality, setImageQuality] = useState(0.85);
   const [isProcessing, setIsProcessing] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
   const [status, setStatus] = useState(null);
@@ -428,7 +405,7 @@ export default function ImageToPdfPage() {
       for (let index = 0; index < images.length; index += 1) {
         const item = images[index];
         const processed = await preprocessImageForPdf(item.file, item.rotation, {
-          quality: imageQuality
+          quality: DEFAULT_IMAGE_QUALITY
         });
         const embeddedImage = await pdfDoc.embedJpg(processed.bytes);
         const pageSize = getTemplatePageSize(pageTemplate, processed);
@@ -528,25 +505,10 @@ export default function ImageToPdfPage() {
           <>
             <section className="image-to-pdf-template-panel">
               <div className="image-to-pdf-template-copy">
-                <span className="field-label">Template PDF</span>
-                <div className="field-value">Ukuran halaman &amp; kualitas gambar</div>
+                <span className="field-label">Ukuran Halaman</span>
                 <div className="image-to-pdf-template-meta">
                   {images.length} gambar - margin 0,5 inci
                 </div>
-                <label className="converter-field image-to-pdf-quality">
-                  <span className="field-label">Kualitas gambar</span>
-                  <select
-                    className="converter-select"
-                    value={imageQuality}
-                    onChange={event => setImageQuality(Number(event.target.value))}
-                  >
-                    {QUALITY_OPTIONS.map(option => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
               </div>
               <div
                 className="image-to-pdf-template-options"
