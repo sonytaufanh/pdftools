@@ -16,10 +16,9 @@ function getSafePageCount(value) {
 }
 
 const SCALE_OPTIONS = [
-  { value: 1, label: 'Layar - 72 DPI' },
-  { value: 1.5, label: 'Sedang - 108 DPI' },
-  { value: 2, label: 'Tinggi - 144 DPI' },
-  { value: 3, label: 'Cetak - 216 DPI' }
+  { value: 1.5, label: 'Standar' },
+  { value: 2, label: 'Tinggi' },
+  { value: 3, label: 'Sangat Tinggi' }
 ];
 
 export default function PdfToImagePage() {
@@ -361,7 +360,7 @@ export default function PdfToImagePage() {
 
               <div className="converter-field">
                 <label className="field-label" htmlFor="pdf-to-image-scale">
-                  Resolusi
+                  Kualitas Gambar
                 </label>
                 <select
                   id="pdf-to-image-scale"
