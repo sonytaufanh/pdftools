@@ -4,7 +4,6 @@ import { Archive, Download, FileText, SlidersHorizontal, Upload, X } from 'lucid
 import ProcessingOverlay from '../components/ProcessingOverlay';
 import StatusBanner from '../components/StatusBanner';
 import { canvasToArrayBuffer, clearCanvas } from '../lib/canvas';
-import { buildTargetSizeOptions } from '../lib/compressTargets';
 import { formatBytes, getPdfBaseName } from '../lib/formatters';
 import { destroyPdfProxy, getPdfJsLib } from '../lib/pdfjs';
 import { readPdfPreview } from '../lib/pdfPreview';
@@ -81,22 +80,6 @@ function chooseAvailablePresetId(sizeValues, originalSize, preferredId) {
   return availablePresetIds.includes(preferredId)
     ? preferredId
     : (availablePresetIds[0] ?? preferredId ?? COMPRESSION_PRESETS[0].id);
-}
-
-function findPresetIdForTarget(sizeValues, targetBytes) {
-  const sizes = COMPRESSION_PRESETS.map(preset => ({
-    id: preset.id,
-    size: sizeValues[preset.id]
-  })).filter(entry => Number.isFinite(entry.size) && entry.size > 0);
-
-  const withinTarget = sizes.filter(entry => entry.size <= targetBytes);
-  if (withinTarget.length) {
-    // Pick the largest output that still fits: best quality under the target.
-    return withinTarget.reduce((best, entry) => (entry.size > best.size ? entry : best)).id;
-  }
-
-  if (!sizes.length) return null;
-  return sizes.reduce((best, entry) => (entry.size < best.size ? entry : best)).id;
 }
 
 async function estimateCompressionSizes(file, pageCount, onProgress) {
@@ -176,7 +159,6 @@ export default function CompressPdfPage() {
   const [result, setResult] = useState(null);
   const [presetEstimates, setPresetEstimates] = useState({ status: 'idle', values: {} });
   const [presetActualSizes, setPresetActualSizes] = useState({});
-  const [targetSizeBytes, setTargetSizeBytes] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [isFileDropActive, setIsFileDropActive] = useState(false);
@@ -201,36 +183,6 @@ export default function CompressPdfPage() {
   const canCompressSelectedPreset = Boolean(
     pdfFile && presetEstimates.status === 'ready' && availablePresetIds.includes(selectedPreset.id)
   );
-  const targetSizeOptions = useMemo(
-    () => (pdfFile ? buildTargetSizeOptions(pdfFile.size) : []),
-    [pdfFile]
-  );
-
-  function applyTargetSize(targetBytes) {
-    const nextTarget = targetSizeBytes === targetBytes ? null : targetBytes;
-    setTargetSizeBytes(nextTarget);
-
-    if (nextTarget === null || presetEstimates.status !== 'ready') return;
-    if (availablePresetIds.length === 0) return;
-
-    let nextPresetId = findPresetIdForTarget(presetSizeValues, nextTarget);
-    // Pastikan preset yang dipilih benar-benar lebih kecil dari file asli.
-    if (!availablePresetIds.includes(nextPresetId)) {
-      nextPresetId = availablePresetIds[availablePresetIds.length - 1];
-    }
-    if (!nextPresetId) return;
-
-    setSelectedPresetId(nextPresetId);
-    const estimatedSize = presetSizeValues[nextPresetId];
-    const reachable = Number.isFinite(estimatedSize) && estimatedSize <= nextTarget;
-    setStatus({
-      tone: 'info',
-      title: reachable ? 'Preset sesuai target' : 'Target mungkin tidak tercapai',
-      detail: reachable
-        ? `Perkiraan hasil sekitar ${formatBytes(estimatedSize || 0)}.`
-        : `Perkiraan terkecil ${formatBytes(estimatedSize || 0)} — preset terkecil yang tersedia dipakai.`
-    });
-  }
 
   async function handleFileUpload(event) {
     const [file] = Array.from(event.target.files ?? []);
@@ -257,7 +209,6 @@ export default function CompressPdfPage() {
     setPresetEstimates({ status: 'loading', values: {} });
     setPresetActualSizes({});
     setSelectedPresetId(COMPRESSION_PRESETS[0].id);
-    setTargetSizeBytes(null);
 
     try {
       const preview = await readPdfPreview(file, { scale: 0.46, quality: 0.82 });
@@ -324,7 +275,6 @@ export default function CompressPdfPage() {
     setPdfFile(null);
     setResult(null);
     setStatus(null);
-    setTargetSizeBytes(null);
     setPresetEstimates({ status: 'idle', values: {} });
     setPresetActualSizes({});
   }
@@ -614,36 +564,6 @@ export default function CompressPdfPage() {
                 <SlidersHorizontal size={20} />
               </div>
 
-              {!(presetEstimates.status === 'ready' && availablePresetIds.length === 0) && (
-                <div className="compress-target-field">
-                  <span className="field-label">Target ukuran (opsional)</span>
-                  <div className="compress-target-options" role="group" aria-label="Target ukuran">
-                    {targetSizeOptions.map(option => (
-                      <button
-                        key={option.bytes}
-                        type="button"
-                        className={
-                          targetSizeBytes === option.bytes
-                            ? 'compress-target-button active'
-                            : 'compress-target-button'
-                        }
-                        aria-pressed={targetSizeBytes === option.bytes}
-                        disabled={
-                          presetEstimates.status !== 'ready' || availablePresetIds.length === 0
-                        }
-                        onClick={() => applyTargetSize(option.bytes)}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                  <span className="converter-field-hint">
-                    Target selalu di bawah ukuran asli. Klik satu untuk memakai preset terbaik di
-                    bawahnya, klik lagi untuk membatalkan.
-                  </span>
-                </div>
-              )}
-
               <div className="compress-preset-grid" role="radiogroup" aria-label="Level kompresi">
                 {visiblePresets.map(preset => {
                   const actualSize = presetActualSizes[preset.id];
@@ -672,10 +592,7 @@ export default function CompressPdfPage() {
                       ]
                         .filter(Boolean)
                         .join(' ')}
-                      onClick={() => {
-                        setSelectedPresetId(preset.id);
-                        setTargetSizeBytes(null);
-                      }}
+                      onClick={() => setSelectedPresetId(preset.id)}
                     >
                       <span className="compress-preset-title">
                         <span>{preset.label}</span>
