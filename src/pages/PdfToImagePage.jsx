@@ -25,7 +25,7 @@ export default function PdfToImagePage() {
   const fileInputRef = useRef(null);
   const [pdfFile, setPdfFile] = useState(null);
   const [format, setFormat] = useState('jpg');
-  const [scale, setScale] = useState(2);
+  const [scale, setScale] = useState(3);
   const [pageRange, setPageRange] = useState('');
   const [status, setStatus] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -356,24 +356,6 @@ export default function PdfToImagePage() {
                     ? `${selectedPageCount} dari ${pdfFile.pageCount} halaman dipilih`
                     : 'Biarkan kosong untuk semua halaman. Contoh: 1-3,5'}
                 </span>
-              </div>
-
-              <div className="converter-field">
-                <label className="field-label" htmlFor="pdf-to-image-scale">
-                  Kualitas Gambar
-                </label>
-                <select
-                  id="pdf-to-image-scale"
-                  className="converter-select"
-                  value={scale}
-                  onChange={event => setScale(Number(event.target.value))}
-                >
-                  {SCALE_OPTIONS.map(option => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
               </div>
 
               <div className="converter-note">
