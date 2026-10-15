@@ -211,17 +211,24 @@ export default function CompressPdfPage() {
     setTargetSizeBytes(nextTarget);
 
     if (nextTarget === null || presetEstimates.status !== 'ready') return;
+    if (availablePresetIds.length === 0) return;
 
-    const nextPresetId = findPresetIdForTarget(presetSizeValues, nextTarget);
+    let nextPresetId = findPresetIdForTarget(presetSizeValues, nextTarget);
+    // Pastikan preset yang dipilih benar-benar lebih kecil dari file asli.
+    if (!availablePresetIds.includes(nextPresetId)) {
+      nextPresetId = availablePresetIds[availablePresetIds.length - 1];
+    }
     if (!nextPresetId) return;
 
     setSelectedPresetId(nextPresetId);
     const estimatedSize = presetSizeValues[nextPresetId];
     const reachable = Number.isFinite(estimatedSize) && estimatedSize <= nextTarget;
     setStatus({
-      tone: reachable ? 'info' : 'error',
+      tone: 'info',
       title: reachable ? 'Preset sesuai target' : 'Target mungkin tidak tercapai',
-      detail: `Perkiraan preset terdekat ${formatBytes(estimatedSize || 0)}.`
+      detail: reachable
+        ? `Perkiraan hasil sekitar ${formatBytes(estimatedSize || 0)}.`
+        : `Perkiraan terkecil ${formatBytes(estimatedSize || 0)} — preset terkecil yang tersedia dipakai.`
     });
   }
 
@@ -607,31 +614,35 @@ export default function CompressPdfPage() {
                 <SlidersHorizontal size={20} />
               </div>
 
-              <div className="compress-target-field">
-                <span className="field-label">Target ukuran (opsional)</span>
-                <div className="compress-target-options" role="group" aria-label="Target ukuran">
-                  {targetSizeOptions.map(option => (
-                    <button
-                      key={option.bytes}
-                      type="button"
-                      className={
-                        targetSizeBytes === option.bytes
-                          ? 'compress-target-button active'
-                          : 'compress-target-button'
-                      }
-                      aria-pressed={targetSizeBytes === option.bytes}
-                      disabled={presetEstimates.status !== 'ready'}
-                      onClick={() => applyTargetSize(option.bytes)}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
+              {!(presetEstimates.status === 'ready' && availablePresetIds.length === 0) && (
+                <div className="compress-target-field">
+                  <span className="field-label">Target ukuran (opsional)</span>
+                  <div className="compress-target-options" role="group" aria-label="Target ukuran">
+                    {targetSizeOptions.map(option => (
+                      <button
+                        key={option.bytes}
+                        type="button"
+                        className={
+                          targetSizeBytes === option.bytes
+                            ? 'compress-target-button active'
+                            : 'compress-target-button'
+                        }
+                        aria-pressed={targetSizeBytes === option.bytes}
+                        disabled={
+                          presetEstimates.status !== 'ready' || availablePresetIds.length === 0
+                        }
+                        onClick={() => applyTargetSize(option.bytes)}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="converter-field-hint">
+                    Target selalu di bawah ukuran asli. Klik satu untuk memakai preset terbaik di
+                    bawahnya, klik lagi untuk membatalkan.
+                  </span>
                 </div>
-                <span className="converter-field-hint">
-                  Target selalu di bawah ukuran asli. Klik satu untuk memakai preset terbaik di
-                  bawahnya, klik lagi untuk membatalkan.
-                </span>
-              </div>
+              )}
 
               <div className="compress-preset-grid" role="radiogroup" aria-label="Level kompresi">
                 {visiblePresets.map(preset => {
@@ -678,7 +689,18 @@ export default function CompressPdfPage() {
 
               {pdfFile && presetEstimates.status === 'ready' && visiblePresets.length === 0 && (
                 <div className="compress-empty-note">
-                  Tidak ada preset kompresi yang diperkirakan di bawah ukuran file asli.
+                  <p>
+                    <strong>PDF ini sudah terkompresi optimal.</strong>
+                  </p>
+                  <p>
+                    File asli ({formatBytes(pdfFile.size)}) tidak bisa diperkecil lebih lanjut. PDF
+                    berbasis teks yang sudah efisien sering kali justru membesar saat dirender ulang
+                    sebagai gambar JPEG.
+                  </p>
+                  <p>
+                    Tips: coba file PDF lain yang berisi gambar atau scan — biasanya bisa dikompres
+                    lebih efektif.
+                  </p>
                 </div>
               )}
 

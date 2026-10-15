@@ -132,12 +132,9 @@ test('Compress PDF reads a document and estimates output', async ({ page }, test
   await expect(page.locator('.compress-file-card')).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('.compress-file-name')).toContainText('sample.pdf');
 
-  const targetButton = page.locator('.compress-target-button').first();
-  await expect(targetButton).toBeEnabled({ timeout: 30_000 });
-  await targetButton.click();
-  await expect(targetButton).toHaveAttribute('aria-pressed', 'true');
-  await targetButton.click();
-  await expect(targetButton).toHaveAttribute('aria-pressed', 'false');
+  // PDF teks kecil sudah optimal — tidak ada preset yang bisa mengecilkan.
+  await expect(page.getByText(/sudah terkompresi optimal/i)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('button', { name: /Kompres & Unduh/i })).toBeDisabled();
 });
 
 test('Image to PDF adds an image card', async ({ page }, testInfo) => {
