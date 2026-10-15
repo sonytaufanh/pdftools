@@ -446,10 +446,9 @@ export default function PagePreviewModal({
                       draggable={false}
                       onLoad={fitToView}
                       style={{
-                        width: '100%',
-                        height: '100%',
                         maxWidth: '100%',
-                        maxHeight: '100%'
+                        maxHeight: '100%',
+                        objectFit: 'contain'
                       }}
                     />
                   </div>

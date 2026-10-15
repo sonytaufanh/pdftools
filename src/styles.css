@@ -1865,7 +1865,7 @@ a {
   display: grid;
   place-items: center;
   margin: 0;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 12px;
   border: 1px solid rgba(226, 232, 240, 0.9);
   background: #ffffff;
