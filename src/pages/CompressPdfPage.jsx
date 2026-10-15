@@ -14,23 +14,26 @@ const COMPRESSION_PRESETS = [
   {
     id: 'best',
     label: 'Kualitas Terbaik',
-    description: 'Halaman lebih jelas dengan kualitas output tertinggi.',
+    description: 'Target ~75% dari ukuran asli.',
     scale: 1.75,
-    quality: 0.84
+    quality: 0.84,
+    targetRatio: 0.75
   },
   {
     id: 'balanced',
     label: 'Seimbang',
-    description: 'Kualitas bagus dengan ukuran file lebih kecil.',
+    description: 'Target ~50% dari ukuran asli.',
     scale: 1.35,
-    quality: 0.72
+    quality: 0.72,
+    targetRatio: 0.5
   },
   {
     id: 'small',
     label: 'Kecil',
-    description: 'Ukuran paling kecil untuk dikirim via email.',
+    description: 'Target ~25% dari ukuran asli.',
     scale: 1,
-    quality: 0.56
+    quality: 0.56,
+    targetRatio: 0.25
   }
 ];
 
@@ -573,11 +576,11 @@ export default function CompressPdfPage() {
                     : null;
                   const displayEstimate = estimatedSize ?? fallbackSize;
                   const sizeLabel = actualSize
-                    ? `${formatBytes(actualSize)} aktual`
+                    ? formatBytes(actualSize)
                     : presetEstimates.status === 'loading'
                       ? 'Memperkirakan...'
                       : displayEstimate
-                        ? `~${formatBytes(displayEstimate)} perk.`
+                        ? formatBytes(displayEstimate)
                         : 'Menunggu perkiraan';
 
                   return (
