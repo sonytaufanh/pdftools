@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import JSZip from 'jszip';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import PaginationControls from '../components/PaginationControls';
@@ -590,8 +590,8 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         if (!isCancelled) {
           setPreviewImageUrl('');
           pushToast(
-            'Page preview could not be rendered.',
-            `Page ${previewPageIndex + 1} is still available for download.`,
+            'Pratinjau halaman gagal dirender.',
+            `Halaman ${previewPageIndex + 1} tetap bisa diunduh.`,
             'error'
           );
         }
@@ -1042,8 +1042,8 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         prev.map(page => (page.index === pageIndex ? { ...page, isPreviewLoading: false } : page))
       );
       pushToast(
-        'Preview could not be rendered.',
-        `Page ${pageIndex + 1} will remain available without thumbnail.`,
+        'Pratinjau gagal dirender.',
+        `Halaman ${pageIndex + 1} tetap tersedia tanpa thumbnail.`,
         'error'
       );
     } finally {
@@ -1624,7 +1624,7 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       action: 'delete-selected',
       tone: 'danger',
       title: 'Hapus Halaman Terpilih',
-      message: `${selectedPages.length} selected pages will be removed from the working session.`,
+      message: `${selectedPages.length} halaman terpilih akan dihapus dari sesi kerja.`,
       confirmLabel: 'Hapus'
     });
   }
@@ -1679,7 +1679,7 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       action: 'delete-ranges',
       tone: 'danger',
       title: 'Hapus Halaman Rentang',
-      message: `${pagesToDelete.size} pages in the selected ranges will be removed from the working session.`,
+      message: `${pagesToDelete.size} halaman dalam rentang terpilih akan dihapus dari sesi kerja.`,
       confirmLabel: 'Hapus'
     });
   }
@@ -2514,7 +2514,7 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
                     </button>
                     <button className="primary-button pdf-merge-button" onClick={downloadMergedPdf}>
                       <FilePlus size={16} />
-                      Merge Selected (PDF)
+                      Gabung Terpilih (PDF)
                     </button>
                   </>
                 ) : (
@@ -2631,7 +2631,9 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
 
       <PagePreviewModal
         open={previewPageIndex !== null}
-        pageLabel={previewPageIndex !== null ? `Page ${previewPageIndex + 1}` : 'Page Preview'}
+        pageLabel={
+          previewPageIndex !== null ? `Halaman ${previewPageIndex + 1}` : 'Pratinjau Halaman'
+        }
         imageUrl={previewImageUrl}
         isLoading={isPreviewModalLoading}
         rotation={0}
