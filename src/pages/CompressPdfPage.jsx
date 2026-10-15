@@ -14,33 +14,30 @@ const COMPRESSION_PRESETS = [
   {
     id: 'best',
     label: 'Kualitas Terbaik',
-    description: 'Target ~75% dari ukuran asli.',
-    scale: 1.75,
-    quality: 0.84,
-    targetRatio: 0.75
+    description: 'Halaman lebih jelas dengan kualitas output tertinggi.',
+    scale: 3,
+    quality: 0.92
   },
   {
     id: 'balanced',
     label: 'Seimbang',
-    description: 'Target ~50% dari ukuran asli.',
-    scale: 1.35,
-    quality: 0.72,
-    targetRatio: 0.5
+    description: 'Kualitas bagus dengan ukuran file lebih kecil.',
+    scale: 2,
+    quality: 0.8
   },
   {
     id: 'small',
     label: 'Kecil',
-    description: 'Target ~25% dari ukuran asli.',
-    scale: 1,
-    quality: 0.56,
-    targetRatio: 0.25
+    description: 'Ukuran paling kecil untuk dikirim via email.',
+    scale: 1.5,
+    quality: 0.65
   }
 ];
 
 const FALLBACK_ESTIMATE_RATIOS = {
-  best: 0.82,
-  balanced: 0.68,
-  small: 0.48
+  best: 0.75,
+  balanced: 0.5,
+  small: 0.25
 };
 
 const MIN_SAVINGS_BYTES = 1024;
