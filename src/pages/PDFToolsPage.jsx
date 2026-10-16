@@ -259,7 +259,7 @@ function PageCard({
   const displayWidth = rotatesAxes ? baseHeight : baseWidth;
   const displayHeight = rotatesAxes ? baseWidth : baseHeight;
   const isPortrait = displayHeight >= displayWidth;
-  const frameRotation = rotationOffset;
+  const frameRotation = 0;
 
   useEffect(() => {
     const node = cardRef.current;
@@ -577,11 +577,10 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
           1.8,
           isGrayscale,
           watermarkSettings,
-          null,
+          getEffectiveRotation(pageState),
           controller.signal
         );
-        previewCanvas = rotateCanvas(canvas, pageState.rotationOffset ?? 0);
-        const nextImageUrl = previewCanvas.toDataURL('image/jpeg', 0.92);
+        const nextImageUrl = canvas.toDataURL('image/jpeg', 0.92);
         if (isCancelled) return;
         setPreviewImageUrl(nextImageUrl);
       } catch (error) {
@@ -984,7 +983,8 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       return;
     }
 
-    const previewSignature = `${isGrayscale ? 'bw' : 'color'}|${watermarkSignature}`;
+    const effectiveRotation = getEffectiveRotation(targetPage);
+    const previewSignature = `${isGrayscale ? 'bw' : 'color'}|${watermarkSignature}|${effectiveRotation}`;
     if (targetPage.previewUrl && targetPage.previewSignature === previewSignature) {
       return;
     }
@@ -1005,7 +1005,7 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         0.62,
         isGrayscale,
         watermarkSettings,
-        null,
+        getEffectiveRotation(pageState),
         controller.signal
       );
       const previewUrl = canvas.toDataURL('image/jpeg', 0.9);
@@ -1721,15 +1721,40 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
           page.drawImage(image, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
           blob = new Blob([await nextPdf.save()], { type: 'application/pdf' });
         } else {
-          const sourcePdf = sourcePdfRef.current ?? (await PDFDocument.load(pdfDoc.slice(0)));
-          sourcePdfRef.current = sourcePdf;
-          const nextPdf = await PDFDocument.create();
-          const [copiedPage] = await nextPdf.copyPages(sourcePdf, [pageData.index]);
           const resolvedPage = (await ensurePageMetadata(pageData.index)) ?? pageData;
-          copiedPage.setRotation(degrees(getEffectiveRotation(resolvedPage)));
-          nextPdf.addPage(copiedPage);
-          await applyPdfWatermark(copiedPage, nextPdf, watermarkSettings);
-          blob = new Blob([await nextPdf.save()], { type: 'application/pdf' });
+          const effectiveRotation = getEffectiveRotation(resolvedPage);
+          const originalRotation = normalizeRotation(resolvedPage.originalRotation ?? 0);
+
+          if (effectiveRotation === originalRotation) {
+            // Tidak ada rotasi user → gunakan vector PDF (kualitas terbaik)
+            const sourcePdf = sourcePdfRef.current ?? (await PDFDocument.load(pdfDoc.slice(0)));
+            sourcePdfRef.current = sourcePdf;
+            const nextPdf = await PDFDocument.create();
+            const [copiedPage] = await nextPdf.copyPages(sourcePdf, [pageData.index]);
+            nextPdf.addPage(copiedPage);
+            await applyPdfWatermark(copiedPage, nextPdf, watermarkSettings);
+            blob = new Blob([await nextPdf.save()], { type: 'application/pdf' });
+          } else {
+            // Ada rotasi user → render via canvas supaya watermark tetap tegak
+            renderedCanvas = await renderPageToCanvas(
+              resolvedPage,
+              2.5,
+              false,
+              watermarkSettings,
+              effectiveRotation
+            );
+            const imgBytes = await canvasToArrayBuffer(renderedCanvas, 'image/jpeg', 0.9);
+            const nextPdf = await PDFDocument.create();
+            const image = await nextPdf.embedJpg(imgBytes);
+            const page = nextPdf.addPage([renderedCanvas.width / 2.5, renderedCanvas.height / 2.5]);
+            page.drawImage(image, {
+              x: 0,
+              y: 0,
+              width: page.getWidth(),
+              height: page.getHeight()
+            });
+            blob = new Blob([await nextPdf.save()], { type: 'application/pdf' });
+          }
         }
       } else {
         extension = exportFormat;
@@ -1865,15 +1890,43 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       } else {
         const sourcePdf = sourcePdfRef.current ?? (await PDFDocument.load(pdfDoc.slice(0)));
         sourcePdfRef.current = sourcePdf;
-        const copiedPages = await nextPdf.copyPages(sourcePdf, sortedIndices);
-        for (let i = 0; i < copiedPages.length; i += 1) {
-          setLoadingProgress({ current: i + 1, total: copiedPages.length });
+        for (let i = 0; i < sortedIndices.length; i += 1) {
+          setLoadingProgress({ current: i + 1, total: sortedIndices.length });
+          const index = sortedIndices[i];
           const pageState =
-            (await ensurePageMetadata(sortedIndices[i])) ??
-            pagesRef.current.find(page => page.index === sortedIndices[i]);
-          if (pageState) copiedPages[i].setRotation(degrees(getEffectiveRotation(pageState)));
-          nextPdf.addPage(copiedPages[i]);
-          await applyPdfWatermark(copiedPages[i], nextPdf, watermarkSettings);
+            (await ensurePageMetadata(index)) ??
+            pagesRef.current.find(page => page.index === index);
+          const effectiveRotation = getEffectiveRotation(pageState || {});
+          const originalRotation = normalizeRotation(pageState?.originalRotation ?? 0);
+
+          if (effectiveRotation === originalRotation) {
+            // Tidak ada rotasi user → vector PDF
+            const [copiedPage] = await nextPdf.copyPages(sourcePdf, [index]);
+            nextPdf.addPage(copiedPage);
+            await applyPdfWatermark(copiedPage, nextPdf, watermarkSettings);
+          } else {
+            // Rotasi user → render via canvas supaya watermark tegak
+            const canvas = await renderPageToCanvas(
+              pageState,
+              2.5,
+              false,
+              watermarkSettings,
+              effectiveRotation
+            );
+            try {
+              const imgBytes = await canvasToArrayBuffer(canvas, 'image/jpeg', 0.8);
+              const image = await nextPdf.embedJpg(imgBytes);
+              const page = nextPdf.addPage([canvas.width / 2.5, canvas.height / 2.5]);
+              page.drawImage(image, {
+                x: 0,
+                y: 0,
+                width: page.getWidth(),
+                height: page.getHeight()
+              });
+            } finally {
+              clearCanvas(canvas);
+            }
+          }
         }
       }
 
@@ -1956,14 +2009,39 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
             }
           }
         } else {
-          const copiedPages = await nextPdf.copyPages(sourcePdf, indices);
-          for (let j = 0; j < copiedPages.length; j += 1) {
+          for (let j = 0; j < indices.length; j += 1) {
             const pageState =
               (await ensurePageMetadata(indices[j])) ??
               pagesRef.current.find(page => page.index === indices[j]);
-            if (pageState) copiedPages[j].setRotation(degrees(getEffectiveRotation(pageState)));
-            nextPdf.addPage(copiedPages[j]);
-            await applyPdfWatermark(copiedPages[j], nextPdf, watermarkSettings);
+            const effectiveRotation = getEffectiveRotation(pageState || {});
+            const originalRotation = normalizeRotation(pageState?.originalRotation ?? 0);
+
+            if (effectiveRotation === originalRotation) {
+              const [copiedPage] = await nextPdf.copyPages(sourcePdf, [indices[j]]);
+              nextPdf.addPage(copiedPage);
+              await applyPdfWatermark(copiedPage, nextPdf, watermarkSettings);
+            } else {
+              const canvas = await renderPageToCanvas(
+                pageState,
+                2.5,
+                false,
+                watermarkSettings,
+                effectiveRotation
+              );
+              try {
+                const imgBytes = await canvasToArrayBuffer(canvas, 'image/jpeg', 0.8);
+                const image = await nextPdf.embedJpg(imgBytes);
+                const page = nextPdf.addPage([canvas.width / 2.5, canvas.height / 2.5]);
+                page.drawImage(image, {
+                  x: 0,
+                  y: 0,
+                  width: page.getWidth(),
+                  height: page.getHeight()
+                });
+              } finally {
+                clearCanvas(canvas);
+              }
+            }
           }
         }
 
