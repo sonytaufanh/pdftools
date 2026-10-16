@@ -11,7 +11,8 @@ import {
   applyCanvasGrayscale,
   canvasToArrayBuffer,
   canvasToBlob,
-  clearCanvas
+  clearCanvas,
+  rotateCanvas
 } from '../lib/canvas';
 import { destroyPdfProxy, getPdfJsLib } from '../lib/pdfjs';
 import { moveItem } from '../lib/listReorder';
@@ -952,13 +953,22 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
 
     try {
       page = await pdfProxy.getPage(pageState.index + 1);
-      const viewportRotation = rotationOverride ?? resolvedPage.originalRotation ?? 0;
-      const viewport = page.getViewport({ scale, rotation: viewportRotation });
+      const originalRotation = resolvedPage.originalRotation ?? 0;
+      const targetRotation = rotationOverride ?? originalRotation;
+      const rotationDiff = normalizeRotation(targetRotation - originalRotation);
+
+      // Render halaman di rotasi asli
+      const viewport = page.getViewport({ scale, rotation: originalRotation });
       canvas = document.createElement('canvas');
       const context = canvas.getContext('2d');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       await renderPageWithCancellation(page, context, viewport, signal);
+
+      // Putar canvas manual jika ada rotasi user (SEBELUM watermark)
+      if (rotationDiff !== 0) {
+        canvas = rotateCanvas(canvas, rotationDiff);
+      }
 
       if (forceGrayscale) {
         applyCanvasGrayscale(canvas);
