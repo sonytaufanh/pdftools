@@ -557,6 +557,10 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     watermarkSettings
   ]);
 
+  const previewPage =
+    previewPageIndex !== null ? pages.find(page => page.index === previewPageIndex) : null;
+  const previewRotation = previewPage ? getEffectiveRotation(previewPage) : 0;
+
   useEffect(() => {
     if (previewPageIndex === null) return undefined;
 
@@ -567,7 +571,11 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       const pageState = pagesRef.current.find(page => page.index === previewPageIndex);
       if (!pageState) return;
 
-      setIsPreviewModalLoading(true);
+      // Hanya tampilkan skeleton jika belum ada gambar (ganti halaman).
+      // Saat rotasi/watermark berubah, tetap tampilkan gambar lama sampai yang baru siap.
+      if (!previewImageUrl) {
+        setIsPreviewModalLoading(true);
+      }
       let canvas = null;
       try {
         canvas = await renderPageToCanvas(
@@ -606,7 +614,7 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
       isCancelled = true;
       controller.abort();
     };
-  }, [isGrayscale, pages, previewPageIndex, watermarkSignature]);
+  }, [isGrayscale, previewImageUrl, previewPageIndex, previewRotation, watermarkSignature]);
 
   useEffect(() => {
     if (previewPageIndex === null) return undefined;
