@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { PDFDocument, StandardFonts, degrees } from 'pdf-lib';
 import {
   Check,
@@ -7,7 +7,6 @@ import {
   FileCheck,
   Files,
   FileStack,
-  Hash,
   Palette,
   PlusCircle,
   RotateCw,
@@ -151,7 +150,7 @@ function PreviewModal({
   );
 }
 
-function MergeReviewModal({ open, items, totalPages, includePageNumbers, onClose, onConfirm }) {
+function MergeReviewModal({ open, items, totalPages, onClose, onConfirm }) {
   return (
     <ModalOverlay open={open} onClose={onClose} labelledBy="merge-review-title">
       <div className="confirm-modal merge-review-modal">
@@ -164,7 +163,6 @@ function MergeReviewModal({ open, items, totalPages, includePageNumbers, onClose
           <p className="confirm-text">
             {items.length} file{items.length === 1 ? '' : 's'} dan {totalPages} halaman
             {totalPages === 1 ? '' : 's'} akan ditulis ke PDF.{' '}
-            {includePageNumbers ? 'Nomor halaman akan ditambahkan.' : 'Nomor halaman dimatikan.'}
           </p>
           <ol className="merge-review-list">
             {items.map((item, index) => (
@@ -235,7 +233,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
   const [draggedIndex, setDraggedIndex] = useState(null);
   const [dropTargetIndex, setDropTargetIndex] = useState(null);
   const [isGrayscale, setIsGrayscale] = useState(false);
-  const [includePageNumbers, setIncludePageNumbers] = useState(true);
   const [isReviewOpen, setIsReviewOpen] = useState(false);
   const [isFileDropActive, setIsFileDropActive] = useState(false);
   const [previewFileId, setPreviewFileId] = useState(null);
@@ -322,9 +319,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
         if (restored.length) {
           setUploadedFiles(restored);
           if (typeof saved.isGrayscale === 'boolean') setIsGrayscale(saved.isGrayscale);
-          if (typeof saved.includePageNumbers === 'boolean') {
-            setIncludePageNumbers(saved.includePageNumbers);
-          }
         }
       } catch (error) {
         console.error(error);
@@ -345,7 +339,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
     const handle = window.setTimeout(() => {
       void saveSession('merge-files', {
         isGrayscale,
-        includePageNumbers,
         files: uploadedFiles.map(item => ({
           ...item,
           preview: item.preview?.startsWith('blob:') ? '' : item.preview
@@ -354,7 +347,7 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
     }, 400);
 
     return () => window.clearTimeout(handle);
-  }, [uploadedFiles, isGrayscale, includePageNumbers]);
+  }, [uploadedFiles, isGrayscale]);
 
   const activePreviewIndex = previewFileId
     ? uploadedFiles.findIndex(file => file.id === previewFileId)
@@ -1062,17 +1055,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
     try {
       const pdfDoc = await PDFDocument.create();
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      let pageNumber = 1;
-
-      function drawPageNumber(page, width) {
-        if (includePageNumbers) {
-          const label = String(pageNumber);
-          const size = 10;
-          const textWidth = font.widthOfTextAtSize(label, size);
-          page.drawText(label, { x: width / 2 - textWidth / 2, y: 20, size, font });
-        }
-        pageNumber += 1;
-      }
 
       async function openPdfProxy(file) {
         const pdfjsLib = getPdfJsLib();
@@ -1107,7 +1089,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
           const pageHeight = outputCanvas.height / renderScale;
           const outputPage = pdfDoc.addPage([pageWidth, pageHeight]);
           outputPage.drawImage(image, { x: 0, y: 0, width: pageWidth, height: pageHeight });
-          drawPageNumber(outputPage, pageWidth);
         } finally {
           page?.cleanup();
           clearCanvas(canvas);
@@ -1164,7 +1145,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
             }
             pdfDoc.addPage(page);
             const { width } = page.getSize();
-            drawPageNumber(page, width);
           });
           continue;
         }
@@ -1207,7 +1187,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
             }
             pdfDoc.addPage(page);
             const { width } = page.getSize();
-            drawPageNumber(page, width);
           });
         } else {
           const normalizedRotation = (((item.rotation ?? 0) % 360) + 360) % 360;
@@ -1235,7 +1214,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
           const y = (pageSize.height - drawHeight) / 2;
 
           page.drawImage(embeddedImage, { x, y, width: drawWidth, height: drawHeight });
-          drawPageNumber(page, pageSize.width);
         }
       }
 
@@ -1310,15 +1288,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
             >
               <Palette size={16} />
               {isGrayscale ? 'B&W ON' : 'WARNA'}
-            </button>
-            <button
-              type="button"
-              className={includePageNumbers ? 'pdf-filter-button active' : 'pdf-filter-button'}
-              onClick={() => setIncludePageNumbers(prev => !prev)}
-              title="Cetak nomor halaman pada PDF gabungan"
-            >
-              <Hash size={16} />
-              {includePageNumbers ? 'Nomor ON' : 'Tanpa Nomor'}
             </button>
             {uploadedFiles.length > 0 && (
               <>
@@ -1472,37 +1441,11 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
                         onMoveForward={() => moveFileByOffset(file.id, 1)}
                       />
                     </div>
-                    <div
-                      className={
-                        canBreakdownFile(file) || canGroupBackPages(file)
-                          ? 'page-footer merge-page-footer four-actions'
-                          : 'page-footer merge-page-footer'
-                      }
-                    >
+                    <div className="page-footer merge-page-footer">
                       <button className="ghost-button" onClick={() => setPreviewFileId(file.id)}>
                         <Eye size={16} />
                         Pratinjau
                       </button>
-                      {canBreakdownFile(file) && (
-                        <button
-                          className="ghost-button"
-                          onClick={() => breakdownFile(file.id)}
-                          title="Pecah PDF menjadi kartu per halaman"
-                        >
-                          <Ungroup size={16} />
-                          Breakdown
-                        </button>
-                      )}
-                      {canGroupBackPages(file) && (
-                        <button
-                          className="ghost-button"
-                          onClick={() => groupBackPages(file.id)}
-                          title="Gabungkan halaman kembali menjadi satu file"
-                        >
-                          <FileStack size={16} />
-                          Group
-                        </button>
-                      )}
                       <button
                         className="ghost-button"
                         onClick={() => rotateFile(file.id)}
@@ -1511,6 +1454,18 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
                         <RotateCw size={16} />
                         Putar
                       </button>
+                      {canBreakdownFile(file) ? (
+                        <button
+                          className="ghost-button"
+                          onClick={() => breakdownFile(file.id)}
+                          title="Pecah PDF menjadi kartu per halaman"
+                        >
+                          <Ungroup size={16} />
+                          Breakdown
+                        </button>
+                      ) : (
+                        <span />
+                      )}
                       <button className="danger-button" onClick={() => removeFile(file.id)}>
                         <Trash2 size={16} />
                         Hapus
@@ -1561,7 +1516,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
         open={isReviewOpen}
         items={uploadedFiles}
         totalPages={totalMergedPages}
-        includePageNumbers={includePageNumbers}
         onClose={() => setIsReviewOpen(false)}
         onConfirm={() => {
           setIsReviewOpen(false);
