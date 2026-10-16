@@ -15,17 +15,13 @@ function getSafePageCount(value) {
   return Math.max(1, Number(value) || 1);
 }
 
-const SCALE_OPTIONS = [
-  { value: 1.5, label: 'Standar' },
-  { value: 2, label: 'Tinggi' },
-  { value: 3, label: 'Sangat Tinggi' }
-];
+const DEFAULT_SCALE = 3;
 
 export default function PdfToImagePage() {
   const fileInputRef = useRef(null);
   const [pdfFile, setPdfFile] = useState(null);
   const [format, setFormat] = useState('jpg');
-  const [scale, setScale] = useState(3);
+  const scale = DEFAULT_SCALE;
   const [pageRange, setPageRange] = useState('');
   const [status, setStatus] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);

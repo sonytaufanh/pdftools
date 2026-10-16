@@ -11,8 +11,7 @@ import {
   applyCanvasGrayscale,
   canvasToArrayBuffer,
   canvasToBlob,
-  clearCanvas,
-  rotateCanvas
+  clearCanvas
 } from '../lib/canvas';
 import { destroyPdfProxy, getPdfJsLib } from '../lib/pdfjs';
 import { moveItem } from '../lib/listReorder';
@@ -570,7 +569,6 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
 
       setIsPreviewModalLoading(true);
       let canvas = null;
-      let previewCanvas = null;
       try {
         canvas = await renderPageToCanvas(
           pageState,
@@ -596,9 +594,6 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         }
       } finally {
         clearCanvas(canvas);
-        if (previewCanvas && previewCanvas !== canvas) {
-          clearCanvas(previewCanvas);
-        }
         if (!isCancelled) {
           setIsPreviewModalLoading(false);
         }
@@ -1096,7 +1091,7 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
         pageWidth: pageViewport.width,
         pageHeight: pageViewport.height,
         previewUrl: canvas.toDataURL('image/jpeg', 0.9),
-        previewSignature: 'color|none',
+        previewSignature: `color|none|${normalizeRotation(originalRotation)}`,
         isPreviewLoading: false
       };
     } finally {

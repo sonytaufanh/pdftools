@@ -1,12 +1,11 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
-import { PDFDocument, StandardFonts, degrees } from 'pdf-lib';
+import { PDFDocument, degrees } from 'pdf-lib';
 import {
   Check,
   CheckSquare,
   Eye,
   FileCheck,
   Files,
-  FileStack,
   Palette,
   PlusCircle,
   RotateCw,
@@ -1029,22 +1028,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
     }
   }
 
-  function groupBackPages(id) {
-    const state = getBreakdownGroupState(id);
-    if (!state) return;
-
-    if (state.hasChanges) {
-      setGroupConfirmAction({
-        targetId: id,
-        fileName: state.targetPage.file.name,
-        message: `${state.targetPage.file.name} memiliki perubahan breakdown. Simpan halaman yang diedit sebagai satu grup, atau kembalikan ke file asli?`
-      });
-      return;
-    }
-
-    restoreOriginalGroup(state);
-  }
-
   async function convertAndMergeFiles() {
     if (uploadedFiles.length === 0) return;
     const saveTarget = await requestPdfSaveTarget('Dokumen_Gabungan');
@@ -1054,7 +1037,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
 
     try {
       const pdfDoc = await PDFDocument.create();
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
       async function openPdfProxy(file) {
         const pdfjsLib = getPdfJsLib();
@@ -1144,7 +1126,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
               );
             }
             pdfDoc.addPage(page);
-            const { width } = page.getSize();
           });
           continue;
         }
@@ -1186,7 +1167,6 @@ export default function MergeFilesPage({ onSessionChange = () => {} }) {
               );
             }
             pdfDoc.addPage(page);
-            const { width } = page.getSize();
           });
         } else {
           const normalizedRotation = (((item.rotation ?? 0) % 360) + 360) % 360;

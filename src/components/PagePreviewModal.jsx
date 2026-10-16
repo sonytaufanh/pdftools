@@ -52,9 +52,6 @@ export default function PagePreviewModal({
     width: Math.max(1, Math.round(paperBaseWidth * activeZoom)),
     height: Math.max(1, Math.round(paperBaseHeight * activeZoom))
   };
-  const assetFrameSize = quarterTurn
-    ? { width: paperFrameSize.height, height: paperFrameSize.width }
-    : paperFrameSize;
   const stageWidth = Math.max(viewportSize.width, paperFrameSize.width + STAGE_PADDING * 2);
   const stageHeight = Math.max(viewportSize.height, paperFrameSize.height + STAGE_PADDING * 2);
 
@@ -320,8 +317,6 @@ export default function PagePreviewModal({
   }, [open, imageUrl, isLoading, rotation, pageLabel]);
 
   if (!open) return null;
-
-  const paperPosition = getPaperOrigin();
 
   return (
     <ModalOverlay
