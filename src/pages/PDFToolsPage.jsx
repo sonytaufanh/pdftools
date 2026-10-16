@@ -954,8 +954,10 @@ export default function PDFToolsPage({ onSessionChange = () => {} }) {
     try {
       page = await pdfProxy.getPage(pageState.index + 1);
       const originalRotation = resolvedPage.originalRotation ?? 0;
-      const targetRotation = rotationOverride ?? originalRotation;
-      const rotationDiff = normalizeRotation(targetRotation - originalRotation);
+      const userRotationOffset = resolvedPage.rotationOffset ?? 0;
+      // Hitung rotasi di DALAM fungsi pakai data yang sudah di-load,
+      // bukan dari parameter yang mungkin stale.
+      const rotationDiff = normalizeRotation(userRotationOffset);
 
       // Render halaman di rotasi asli
       const viewport = page.getViewport({ scale, rotation: originalRotation });
